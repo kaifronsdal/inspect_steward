@@ -451,3 +451,29 @@ class TestReasoningOnTheWire:
         result = probe([log(_three_turns(kept=2))], models=[MODEL])
 
         assert check(result, REASONING_API).verdict is Verdict.PASSED
+
+
+class TestMarkerShapes:
+    """`_markers` counts a replayed reasoning block whoever serialized it.
+
+    A direct unit of the per-provider union in `_walk`, because the wire check above composes only Anthropic-shaped bodies — and the shape that broke in the field was Google's: its genai SDK serializes the signature key in camelCase (`thoughtSignature`) on the wire rather than the snake_case the check first matched, so a body plainly carrying reasoning counted zero markers and the check read a real replay as a drop.
+    """
+
+    def test_google_camelcase_thought_signature_counts(self) -> None:
+        # the regression: camelCase is what the genai SDK actually sends
+        assert checks_module._markers({"thoughtSignature": "sig"}) == 1
+
+    def test_google_snake_case_thought_signature_still_counts(self) -> None:
+        assert checks_module._markers({"thought_signature": "sig"}) == 1
+
+    def test_google_thought_flag_counts(self) -> None:
+        assert checks_module._markers({"thought": True}) == 1
+
+    def test_a_bare_reasoning_config_is_not_a_marker(self) -> None:
+        # OpenAI's request-level reasoning config rides on every reasoning
+        # request and says nothing about replay, so it must not count
+        assert checks_module._markers({"reasoning": {"effort": "high"}}) == 0
+
+    def test_markers_nested_in_the_body_are_summed(self) -> None:
+        body = {"messages": [{"thoughtSignature": "a"}, {"thought_signature": "b"}]}
+        assert checks_module._markers(body) == 2

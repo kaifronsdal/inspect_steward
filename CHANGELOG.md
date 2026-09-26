@@ -1,3 +1,7 @@
+## Unreleased
+
+- Reasoning-on-the-wire smoke: count Google's `thoughtSignature` marker, the camelCase key the genai SDK serializes on the wire, alongside the snake_case `thought_signature`. Without it a Google request that plainly carried a replayed reasoning block counted zero markers, and the check read a real replay as a dropped block — a false failure rather than a signature defect upstream.
+
 ## 0.2.8 (23 September 2026)
 
 - Interim scoring: keep each interim metric's originating scorer, so a running task's headline resolves correctly when two dict-valued scorers emit the same score name (e.g. both a deterministic and an adjudicated scorer reporting `hijack`). Reads the `scorer`/`name` pair from Inspect's interim response (0.3.266+), falling back to the pre-0.3.266 single field for an older worker; the `.steward/interim.json` cache version is bumped, so a stale cache is discarded and re-harvested rather than migrated.
