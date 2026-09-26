@@ -402,8 +402,12 @@ def _walk(node: object) -> int:
             return 1  # anthropic, redacted
         if kind == "reasoning":
             return 1  # openai responses -- an input item, not the config
-        if entry.get("thought") is True or entry.get("thought_signature"):
-            return 1  # google
+        if (
+            entry.get("thought") is True
+            or entry.get("thought_signature")
+            or entry.get("thoughtSignature")
+        ):
+            return 1  # google -- camelCase is what the genai SDK serializes on the wire
         if entry.get("reasoning_details") or entry.get("reasoning_content"):
             return 1  # openrouter and the completions-compatible providers
         return sum(_walk(value) for value in entry.values())
