@@ -90,6 +90,12 @@ def test_systemd_carries_the_interval_the_command_and_the_directory() -> None:
     assert "Type=oneshot" in service
 
 
+def test_systemd_leaves_the_workers_a_tend_spawned_running() -> None:
+    # the default KillMode=control-group kills the whole cgroup when the
+    # oneshot exits, and a detached worker is still in it
+    assert "KillMode=process" in render_service(entry()).splitlines()
+
+
 def test_cron_carries_the_interval_the_command_and_the_directory() -> None:
     line = cron_line(entry(900))
 

@@ -21,6 +21,8 @@ def render_service(entry: TimerEntry) -> str:
     """The unit that runs one tend.
 
     **The redirect is in `ExecStart` rather than in `StandardOutput=append:`**, because systemd opens that path itself, will not create a missing parent, and fails the unit when it cannot — see `shell_command`. An `ExecStartPre` mkdir would not help: the output is opened for the whole unit, before the first `ExecStart*` line runs.
+
+    **`KillMode=process`**, because a tend spawns workers that must outlive it. The default, `control-group`, kills every process left in the unit's cgroup once the oneshot exits, and `start_new_session` detaches a worker from the tend's session but not from its cgroup — so every run a scheduled tend started would be killed seconds later. `process` stops only the tend itself.
     """
     return "\n".join(
         [
@@ -29,6 +31,7 @@ def render_service(entry: TimerEntry) -> str:
             "",
             "[Service]",
             "Type=oneshot",
+            "KillMode=process",
             f"WorkingDirectory={entry.workspace}",
             f"ExecStart=/bin/sh -c {shlex.quote(shell_command(entry))}",
             "",
