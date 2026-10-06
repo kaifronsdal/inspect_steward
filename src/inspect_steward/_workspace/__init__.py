@@ -8,6 +8,7 @@ from .create import (
 )
 from .directives import (
     ALIASES,
+    DEFAULT_DISK_LOW,
     DEFAULT_TEND_INTERVAL,
     PREFIX,
     REFUSED,
@@ -19,6 +20,7 @@ from .directives import (
     declared_scan_model,
     parse_setting,
     read_directives,
+    resolve_disk_low,
     resolve_interval,
     resolve_log_root,
     resolve_log_store,
@@ -114,6 +116,7 @@ __all__ = [
     "AGENT_DISARMED",
     "ARMED",
     "COLLECTED",
+    "DEFAULT_DISK_LOW",
     "DEFAULT_TEND_INTERVAL",
     "DEFINITION_NAMES",
     "DISARMED",
@@ -194,6 +197,7 @@ __all__ = [
     "read_ramp_holds",
     "read_signoff",
     "read_smoked",
+    "resolve_disk_low",
     "resolve_interval",
     "resolve_log_dir",
     "resolve_log_root",

@@ -80,6 +80,7 @@ def status_markdown(result: "TendResult", *, header: bool = True) -> str:
     lines += _outcomes(result)
     lines += _resources(result)
     lines += _memory(result)
+    lines += _disk(result)
     return "\n".join(lines)
 
 
@@ -124,6 +125,7 @@ def collect_markdown(result: "TendResult", *, since: int = 0) -> str:
     lines += _live(result)
     lines += _resources(result, width=0)
     lines += _memory(result)
+    lines += _disk(result)
     lines += _tuning(result)
     lines += _policies(result)
     lines += _happened(result, since=since)
@@ -321,6 +323,21 @@ def _memory(result: "TendResult") -> list[str]:
         return []
     lines = memory.lines
     out = [f"**memory** · {lines[0]}", ""]
+    if len(lines) > 1:
+        out.extend(f"- {line}" for line in lines[1:])
+        out.append("")
+    return out
+
+
+def _disk(result: "TendResult") -> list[str]:
+    """The trace logs' filesystem and what Steward can reclaim, while the reclaimer is on.
+
+    Beside memory under the resources table, and the same shape for the same reason: one source for the lines (`DiskReport.lines`), so the terminal and this document cannot disagree about whether the disk is short. Absent entirely where reclaiming is switched off (`disk_low: false`), which is the one state that has nothing to say here.
+    """
+    if (disk := result.disk) is None:
+        return []
+    lines = disk.lines
+    out = [f"**disk** · {lines[0]}", ""]
     if len(lines) > 1:
         out.extend(f"- {line}" for line in lines[1:])
         out.append("")

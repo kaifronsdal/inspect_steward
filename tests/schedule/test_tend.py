@@ -14,6 +14,7 @@ a turn interrupted at any point is recovered by the following one.
 """
 
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -39,7 +40,7 @@ from inspect_steward._tend import (
     status,
     tend,
 )
-from inspect_steward._worker import ConfigView, resolve_inflight
+from inspect_steward._worker import ConfigView, HostDisk, resolve_inflight
 from inspect_steward._workspace import (
     ACTION,
     PAUSED,
@@ -1383,3 +1384,104 @@ def test_a_turn_with_nothing_running_records_no_host_reading(tmp_path: Path) -> 
     (observation,) = observations(workspace)
     assert "memory" in observation
     assert observation["memory"] is None
+
+
+def _plant_traces(directory: Path) -> dict[str, Path]:
+    """A live-pid trace log, a dead-pid one, a gz, and a file that is not a trace."""
+    directory.mkdir(parents=True, exist_ok=True)
+    planted = {
+        "live": directory / f"trace-{os.getpid()}.log",
+        "dead": directory / "trace-424242.log",
+        "gz": directory / "trace-424243.log.gz",
+        "other": directory / "notes.txt",
+    }
+    for path in planted.values():
+        path.write_bytes(b"x" * 1024)
+    return planted
+
+
+def test_a_full_disk_reclaims_dead_trace_logs_but_spares_a_live_ones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The feature end to end: a status previews, a tend deletes, and the item clears.
+
+    The reading is injected rather than taken — a test cannot manufacture a full
+    disk — but the trace logs are real files on a real directory, so what is
+    asserted is which of them a turn actually unlinks.
+    """
+    done = SynthTask("done")
+    workspace, _ = prepared(tmp_path, [done])
+    write_log(workspace.logs, done)
+
+    traces = tmp_path / "traces"
+    planted = _plant_traces(traces)
+
+    free = {"bytes": 1 * 1024**3}  # under the 2 GiB default mark
+
+    def reading(path: Path) -> HostDisk:
+        return HostDisk(total=500 * 1024**3, free=free["bytes"], path=str(path))
+
+    def only_us(pid: int) -> bool:
+        return pid == os.getpid()
+
+    monkeypatch.setattr("inspect_steward._tend.turn.trace_dirs", lambda: [traces])
+    monkeypatch.setattr("inspect_steward._tend.turn.disk_path", lambda: traces)
+    monkeypatch.setattr("inspect_steward._tend.turn.host_disk", reading)
+    # only our own process is alive, so the planted dead-pid file is fair game
+    monkeypatch.setattr("inspect_steward._tend.turn._pid_alive", only_us)
+
+    # a status previews what would go and deletes nothing
+    preview = status(workspace)
+    assert preview.disk is not None and preview.disk.tier == "low"
+    assert {removal.path for removal in preview.disk.removable} == {
+        planted["dead"],
+        planted["gz"],
+    }
+    assert all(path.exists() for path in planted.values())
+    assert any(item.kind == "disk" for item in preview.items)
+
+    # a tend removes the dead-pid log and the gz, keeps the live one and the
+    # non-trace file, and journals the reclaim as one counted event
+    acted = turn(workspace)
+    assert not planted["dead"].exists() and not planted["gz"].exists()
+    assert planted["live"].exists() and planted["other"].exists()
+    assert {removal.path for removal in acted.reclaimed} == {
+        planted["dead"],
+        planted["gz"],
+    }
+    assert any(item.kind == "disk" for item in acted.items)  # the pre-reclaim reading
+    reclaims = [
+        event.payload
+        for event in read_journal(workspace.journal).events
+        if event.type == ACTION and event.payload.get("action") == "reclaim"
+    ]
+    assert len(reclaims) == 1 and len(reclaims[0]["files"]) == 2
+
+    # once the disk reads healthy again the item clears on its own
+    free["bytes"] = 400 * 1024**3
+    healthy = turn(workspace)
+    assert healthy.disk is not None and healthy.disk.tier is None
+    assert [item for item in healthy.items if item.kind == "disk"] == []
+
+
+def test_reclaiming_off_takes_no_disk_reading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `disk_low: false` is the one state with nothing to say: no reading, no
+    # item, and `null` recorded so a reader knows the episode is not open
+    done = SynthTask("done")
+    workspace, _ = prepared(tmp_path, [done])
+    write_log(workspace.logs, done)
+    (workspace.root / "_steward.yaml").write_text("disk_low: false\n", encoding="utf-8")
+
+    def _unexpected(path: Path) -> None:
+        raise AssertionError("host_disk must not be read when reclaiming is off")
+
+    monkeypatch.setattr("inspect_steward._tend.turn.host_disk", _unexpected)
+
+    result = turn(workspace)
+
+    assert result.disk is None
+    assert [item for item in result.items if item.kind == "disk"] == []
+    (observation,) = observations(workspace)
+    assert "disk" in observation and observation["disk"] is None

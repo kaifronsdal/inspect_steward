@@ -35,6 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from .._schedule import DEFAULT_STALL_AFTER, Pool
 from .._util.duration import parse_duration
+from .._util.size import parse_size
 
 PREFIX = "STEWARD_"
 """Every environment variable that changes what Steward does, and nothing else.
@@ -52,6 +53,12 @@ DEFAULT_TEND_INTERVAL = 600
 """Seconds between scheduled tends where nobody said otherwise.
 
 Ten minutes, because the cost of a turn is bounded by what it reads and the cost of *missing* one is a fleet sitting idle for the whole interval. Short enough that an empty slot is refilled while somebody is still awake to care; long enough that a settled directory of two thousand logs is not re-read every minute.
+"""
+
+DEFAULT_DISK_LOW = 2 * 1024**3
+"""Bytes of free disk below which Steward reclaims dead-process trace logs where nobody said otherwise.
+
+Two gibibytes, an absolute floor rather than a share of the volume: the writes a full disk breaks — the journal fsync, an eval log, a worker's trace — fail at near-zero *free bytes* whatever the volume's size, so what counts as a margin does not scale with it the way a memory margin scales with total RAM. On by default, because a trace log filling the disk is a silent failure and the reclaim only ever removes a dead process's own diagnostics; a deployment that would rather Steward never delete one sets `disk_low: false`.
 """
 
 STEWARDS: frozenset[str] = frozenset({"log_dir", "notification"})
@@ -388,6 +395,38 @@ class Directives(BaseModel):
                 f"seconds, minutes, or hours, and Steward will not guess"
             )
         return parse_duration(value)
+
+    disk_low: int | bool | None = Field(default=None)
+    """Free disk below which Steward reclaims dead-process trace logs, `false` to never reclaim, or `None` for the default 2 GiB.
+
+    Written with a unit — `disk_low: 5GiB` — and stored as bytes, the way `tend_interval` is a duration. On by default so a trace log quietly filling the disk is caught without anyone configuring it; `false` for a deployment that would rather Steward never delete a trace log. Only ever reclaims a trace log whose process has exited, and never an eval log — the *never delete a result* invariant (`_evalset.archive`) is about `logs/`, which this does not touch.
+
+    Admitted by the same test its siblings pass: how full a disk Steward tolerates is a property of the host, and no `eval_set()` argument reaches it.
+    """
+
+    @field_validator("disk_low", mode="before")
+    @classmethod
+    def _disk_low(cls, value: object) -> object:
+        """A size written with its unit, or `false` to disable — a bare number and `true` refused the way the duration siblings refuse them.
+
+        `false` earns its place where `heartbeat: false` does: switching the reclaim off is a real choice a deployment makes. `true` is refused for the same reason — it says *on* where omitting the key already means on at the default. A bare number is refused because `disk_low: 5` could be five bytes or five gibibytes, the silent misreading `parse_size` exists to prevent.
+        """
+        if value is None or value is False:
+            return value
+        if value is True:
+            raise ValueError(
+                "is on by default, so `true` adds nothing — omit it for the "
+                "default 2 GiB floor, name a size like '5GiB', or set `false` "
+                "to never reclaim"
+            )
+        if not isinstance(value, str):
+            raise ValueError(
+                f"must be written with a unit, like '5GiB' — {value!r} could be "
+                f"bytes, kibibytes, or gibibytes, and Steward will not guess"
+            )
+        # SizeError is a ValueError, so a bad unit arrives as a field error
+        # naming the value, like every other refusal in this file
+        return parse_size(value)
 
     scan_model: str | bool | None = Field(default=None)
     """The model scanners use, `false` for none configured, or `None` for no preference.
@@ -749,6 +788,28 @@ def resolve_interval(
     if directives.tend_interval is not None:
         return directives.tend_interval
     return DEFAULT_TEND_INTERVAL
+
+
+def resolve_disk_low(
+    directives: Directives, *, disk_low: int | bool | None = None
+) -> int | None:
+    """Resolve the free-disk floor below which trace logs are reclaimed.
+
+    The precedence every standing property follows: the command line, then `_steward.yaml` or `STEWARD_DISK_LOW` (both already folded into `directives`), then the default. `false` at the winning rung switches reclaiming off and resolves to `None`; an absent preference resolves to `DEFAULT_DISK_LOW`, since the reclaim is on by default.
+
+    Args:
+        directives: What the workspace's `_steward.yaml` and environment said.
+        disk_low: Bytes from the command line, already parsed, `False` to disable, or `None` to defer.
+
+    Returns:
+        The floor in bytes, or `None` where reclaiming is switched off.
+    """
+    setting = disk_low if disk_low is not None else directives.disk_low
+    if setting is False:
+        return None
+    if isinstance(setting, int) and not isinstance(setting, bool):
+        return setting
+    return DEFAULT_DISK_LOW
 
 
 def declared_notification(environ: Mapping[str, str]) -> str | bool | None:

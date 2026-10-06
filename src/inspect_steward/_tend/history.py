@@ -18,6 +18,7 @@ A task completing is the run happening; a task retried because its worker died i
 from dataclasses import dataclass, field
 from typing import cast
 
+from .._util.size import format_bytes
 from .._workspace import (
     ACKNOWLEDGED,
     ACTION,
@@ -267,6 +268,18 @@ def _action(payload: dict[str, object]) -> str:
             f"curated {moved} superseded attempt{'s' if moved != 1 else ''} "
             f"into the archive, leaving logs/ holding what was signed"
         )
+    if action == "reclaim":
+        # **counted, like `curated` above and unlike `archive`.** A tend archives
+        # an orphan when it meets one, but reclaiming trace logs is a batch by
+        # construction — a disk emergency removes several at once — so one line
+        # with the count and the space freed is the whole of what a reader wants
+        files = payload.get("files")
+        count = len(cast(list[object], files)) if isinstance(files, list) else 0
+        if not count:
+            return ""
+        freed = payload.get("bytes")
+        amount = f" ({format_bytes(freed)})" if isinstance(freed, int) else ""
+        return f"reclaimed {count} dead-process trace log{'s' if count != 1 else ''}{amount}"
     return action or ""
 
 

@@ -27,6 +27,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, cast
 
+import psutil
+
 from .._anomaly.applied import read_applied
 from .._anomaly.fold import Pending, absorb, as_events, read_anomalies
 from .._anomaly.model import Anomalies
@@ -79,6 +81,7 @@ from .._schedule import (
     resolve_samples_ramp,
 )
 from .._util.duration import is_after, seconds_since
+from .._util.process import UNREADABLE
 from .._worker import (
     DEFAULT_STUCK_AFTER,
     Fleet,
@@ -86,6 +89,7 @@ from .._worker import (
     LiveFleet,
     LiveTarget,
     Unavailable,
+    host_disk,
     host_memory,
     read_fleet,
     read_interim,
@@ -98,6 +102,7 @@ from .._worker import (
 from .._workspace import (
     ACTION,
     ARMED,
+    DEFAULT_DISK_LOW,
     OBSERVATION,
     Ack,
     Armed,
@@ -130,6 +135,7 @@ from .._workspace import (
     read_ramp_holds,
     read_signoff,
     read_undelivered,
+    resolve_disk_low,
     resolve_log_dir,
     resolve_log_store,
     resolve_pool,
@@ -143,6 +149,17 @@ from .analysis_md import Section, analysis_sections, merge_analysis
 from .anomalies_md import Caveat, anomalies_markdown, caveats, outcomes_block
 from .coverage import Coverage, coverage
 from .detect import detect, scan_attempts, task_health
+from .disk import (
+    DiskReport,
+    Removal,
+    disk_path,
+    disk_payload,
+    disk_report,
+    read_disk_since,
+    read_trace_files,
+    remove_trace_file,
+    trace_dirs,
+)
 from .history import Happened, happened
 from .items import (
     Item,
@@ -335,6 +352,15 @@ class TendResult:
 
     Read while something runs, because the series is *what the fleet is doing to the host* and a reading with nothing running would fit tomorrow's fleet against last night's idle box. `None` on a result assembled by hand, and while nothing runs.
     """
+
+    disk: DiskReport | None = None
+    """The trace logs' filesystem this turn and what Steward would reclaim from it (`_tend.disk`).
+
+    Read every turn the reclaim is on — a disk fills between runs as readily as during one — and `None` only where it is switched off (`disk_low: false`) or on a result assembled by hand. The `removable` plan rides on it, so a `status` previews exactly what a tend removes.
+    """
+
+    reclaimed: list[Removal] = field(default_factory=list["Removal"])
+    """The trace logs this turn actually removed, empty on a `status` and on a tend that removed nothing. What the `reclaim` history line counts (`_tend.history`)."""
 
     log_dir: str | None = None
     """Where this run's results are, as the launch that committed the manifest resolved it.
@@ -749,6 +775,9 @@ class _History:
 
     memory_since: str | None = None
     """When a tend last recorded the host as not short — the boundary a `memory` item's id carries (`_tend.memory.read_memory_since`)."""
+
+    disk_since: str | None = None
+    """When a tend last recorded the disk as not short — the boundary a `disk` item's id carries (`_tend.disk.read_disk_since`)."""
     """The previous turn's tuning record — the window's left edge (`_tend.tuning`)."""
 
     ramp_holds: dict[str, RampHold] = field(default_factory=dict[str, "RampHold"])
@@ -860,6 +889,7 @@ def _history(workspace: Workspace) -> _History:
         baseline=read_baseline(events),
         memory=read_memory_history(events, now=time.time()),
         memory_since=read_memory_since(events),
+        disk_since=read_disk_since(events),
         ramp_holds=read_ramp_holds(events),
         ramp_levels=ramp_levels,
         last_step=last_step,
@@ -1064,6 +1094,9 @@ class _Settings:
 
     stuck_after: int | None = None
     """Seconds of sample silence before a `stuck` item, or `None` for `DEFAULT_STUCK_AFTER`. On a degraded turn, the last recorded value — the same last-known-good the pool falls back on."""
+
+    disk_low: int | None = None
+    """Free disk below which trace logs are reclaimed, in bytes, or `None` where reclaiming is switched off (`disk_low: false`). On a degraded turn, `DEFAULT_DISK_LOW` rather than nothing — a broken file must not silently leave the disk unprotected, the opposite direction from the authorities beside it, because this one protects rather than permits."""
 
     stuck_cancel: bool | list[str] | None = None
     """Which stuck tool calls the agent may cancel, as the file expressed it. `None` on a degraded turn whose file would not parse — a standing authority whose text cannot be read is not guessed from history."""
@@ -1276,6 +1309,15 @@ def _turn(
         if progress.live is not None
         else None
     )
+    # the disk reading, unlike the memory one, is taken whether or not a fleet is
+    # running: a trace log left by a crashed scan fills the disk between runs as
+    # readily as during one, and the reclaim is reactive on the current reading
+    # rather than on a series. `None` only where reclaiming is switched off
+    disk = (
+        _read_disk(settings.disk_low, since=history.disk_since)
+        if settings.disk_low is not None
+        else None
+    )
     answered = _signals(observed, fleet)
     plan = plan_tuning(
         answered,
@@ -1332,6 +1374,7 @@ def _turn(
         progress=progress,
         tuning=plan,
         memory=memory,
+        disk=disk,
         log_dir=log_dir,
         notification=notification,
         scan=manifest.scan,
@@ -1453,6 +1496,14 @@ def _turn(
     )
     retuned = _retune(workspace, plan, acted)
 
+    # before the re-read below, so the reclaim's own journal event is folded into
+    # the history this turn's projection reports from — the same ordering the
+    # archive carry-out keeps. `_reclaim_disk` sets `acted.journalled` when it
+    # removes anything, which is what triggers that re-read
+    reclaimed = (
+        _reclaim_disk(workspace, result.disk, acted) if result.disk is not None else []
+    )
+
     if acted.journalled:
         # the projection below reports *what has been done to this run*, and
         # this turn has just done something to it -- so the read that fed it is
@@ -1483,6 +1534,7 @@ def _turn(
             spawned=acted.spawned,
             reaped=acted.reaped,
             archived=acted.archived,
+            reclaimed=reclaimed,
             failures=acted.failures,
         ),
         observed,
@@ -1818,6 +1870,50 @@ def _carry_out(
         _failed(workspace, acted, _describe(action), ex)
 
 
+def _reclaim_disk(
+    workspace: Workspace, report: DiskReport, acted: "_Acted"
+) -> list[Removal]:
+    """Remove the trace logs the report planned, and survive any one not working.
+
+    The reclaim carry-out, on the `_carry_out` discipline: one unlink that fails does not fail the turn or the removals after it, and the journal event is written **after** the files are gone rather than before, so the one record nothing can rebuild never describes a reclaim that did not happen. Counted into a single event rather than one per file — a disk emergency removes several at once, and the history section reads better for a count than for a line each (`_tend.history`); the per-file detail still rides in the event's `files` list for a reader who wants it.
+
+    Nothing here runs on a `status`: it is reached only from the executing branch, and `report.removable` is the same plan a `status` previewed.
+
+    Args:
+        workspace: The workspace, for its journal and operational log.
+        report: This turn's disk report, whose `removable` is the plan.
+        acted: The turn's running tally, marked journalled when anything is removed.
+
+    Returns:
+        What was actually removed, which a file that vanished first is not in.
+    """
+    removed: list[Removal] = []
+    for removal in report.removable:
+        try:
+            if remove_trace_file(removal.path):
+                removed.append(removal)
+        except Exception as ex:
+            _failed(workspace, acted, f"could not reclaim {removal.path}", ex)
+    if removed:
+        append_event(
+            workspace.journal,
+            ACTION,
+            action="reclaim",
+            files=[
+                {
+                    "path": str(removal.path),
+                    "pid": removal.pid,
+                    "bytes": removal.size,
+                    "reason": removal.reason,
+                }
+                for removal in removed
+            ],
+            bytes=sum(removal.size for removal in removed),
+        )
+        acted.journalled = True
+    return removed
+
+
 def _record_departure(
     workspace: Workspace,
     action: ReapWorker,
@@ -1896,6 +1992,44 @@ def _describe(action: Action) -> str:
             return f"could not archive {action.location}"
         case SpawnWorker():
             return f"could not spawn {action.first.key}"
+
+
+def _read_disk(low_mark: int, *, since: str | None) -> DiskReport | None:
+    """This turn's reading of the trace logs' filesystem and the reclaim it implies.
+
+    `None` where the disk cannot be read at all — the mount is gone, the home directory somehow does not exist — so that a disk reading never fails a turn. Everything it calls is itself never-raising (`disk_path`, `host_disk`, `read_trace_files`), so the only `None` here is the genuinely unreadable filesystem.
+
+    Args:
+        low_mark: Free bytes below which trace logs are reclaimed (`settings.disk_low`).
+        since: When a tend last recorded the disk as not short (`history.disk_since`).
+
+    Returns:
+        The report, or `None` where free space could not be read.
+    """
+    path = disk_path()
+    if path is None:
+        return None
+    host = host_disk(path)
+    if host is None:
+        return None
+    return disk_report(
+        host,
+        read_trace_files(trace_dirs()),
+        alive=_pid_alive,
+        low_mark=low_mark,
+        since=since,
+    )
+
+
+def _pid_alive(pid: int) -> bool:
+    """Whether a pid is a live process, failing safe when it cannot be told.
+
+    An unreadable answer reads as *alive*, which keeps the trace log: the one error this must not make is deleting a file whose process is still writing it, so every ambiguity resolves toward keeping the file.
+    """
+    try:
+        return psutil.pid_exists(pid)
+    except UNREADABLE:
+        return True
 
 
 def _fleet(workspace: Workspace, manifest: Manifest, log_dir: str) -> Fleet:
@@ -2036,6 +2170,16 @@ def _settings(
                     else history.stuck_after
                 )
             ),
+            # unlike the authorities beside it, this falls back to the *default*
+            # rather than to nothing: a file that will not parse is exactly when
+            # a disk filling up unwatched would go unnoticed, so the protection
+            # stays on. Where the file parsed it still says `disk_low:`, so that
+            # answers; only a file that would not parse falls to the default
+            disk_low=(
+                resolve_disk_low(directives)
+                if directives is not None
+                else DEFAULT_DISK_LOW
+            ),
             stuck_cancel=directives.stuck_cancel if directives is not None else None,
             preauthorized=(
                 _granted(preauthorized)
@@ -2103,6 +2247,7 @@ def _settings(
         policies=_policies(directives),
         log_store=resolve_log_store(directives),
         stuck_after=stuck_after if stuck_after is not None else directives.stuck_after,
+        disk_low=resolve_disk_low(directives),
         stuck_cancel=directives.stuck_cancel,
         preauthorized=(
             _granted(preauthorized)
@@ -2260,6 +2405,9 @@ def _record(
         # the host's reading, for the series the next turn fits (`_tend.memory`);
         # `None` while nothing runs, which is what ends an episode
         memory=memory_payload(result.memory),
+        # the trace logs' filesystem, for the episode boundary the next turn's
+        # `disk` item reads (`_tend.disk`); `None` where reclaiming is off
+        disk=disk_payload(result.disk),
     )
 
 

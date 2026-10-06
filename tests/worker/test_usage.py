@@ -12,8 +12,9 @@ definitely has a resident set is the one thing a test can count on.
 """
 
 import os
+from pathlib import Path
 
-from inspect_steward._worker import host_memory, process_usage
+from inspect_steward._worker import host_disk, host_memory, process_usage
 
 
 def test_a_pid_repeated_is_a_process_counted_once() -> None:
@@ -59,3 +60,23 @@ def test_the_host_reading_is_consistent_with_itself() -> None:
     assert 0 <= host.available <= host.total
     assert 0 <= host.swap_used <= host.swap_total
     assert host.headroom == host.available + (host.swap_total - host.swap_used)
+
+
+def test_the_disk_reading_is_consistent_with_itself(tmp_path: Path) -> None:
+    """One read of a real filesystem, whose figures have to be a possible disk.
+
+    The values are whatever this box has, so the claim is about their shape:
+    free space fits inside the volume, and the path measured is carried back.
+    """
+    disk = host_disk(tmp_path)
+
+    assert disk is not None
+    assert disk.total > 0
+    assert 0 <= disk.free <= disk.total
+    assert disk.path == str(tmp_path)
+
+
+def test_an_unreadable_path_is_no_reading_rather_than_a_raise() -> None:
+    # a mount that is gone must not fail the turn that would have relieved it;
+    # the reading is simply absent, the way a dead process contributes nothing
+    assert host_disk(Path("/no/such/mount/anywhere")) is None

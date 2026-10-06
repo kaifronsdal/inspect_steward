@@ -106,6 +106,7 @@ STATUS_UNWRITABLE = "status_unwritable"
 SYNC_FAILED = "sync_failed"
 KILL_LOOP = "kill_loop"
 MEMORY = "memory"
+DISK = "disk"
 ANOMALY = "anomaly"
 
 OWNERS = {
@@ -127,6 +128,7 @@ OWNERS = {
     SYNC_FAILED: Owner.OPERATOR,
     KILL_LOOP: Owner.OPERATOR,
     MEMORY: Owner.AGENT,
+    DISK: Owner.AGENT,
     ANOMALY: Owner.AGENT,
 }
 """Default owner per kind. Policy may move some of these once `_steward.yaml` can say so (step 23); a kind absent from the table is the agent's, since an unrouted item is an investigation rather than a question."""
@@ -277,6 +279,7 @@ def tend_items(
         *_sync_failed(result),
         *_kill_loop(result),
         *_memory(result),
+        *_disk(result),
         *_anomalies(
             result.anomalies,
             landed=frozenset(
@@ -1217,6 +1220,43 @@ def _memory(result: "TendResult") -> list[Item]:
             subject="host",
             summary=summary,
             action="add swap, or lower max_samples; see Memory in the runbook",
+        )
+    ]
+
+
+def _disk(result: "TendResult") -> list[Item]:
+    """Free disk is below the mark, and Steward is reclaiming trace logs to recover it.
+
+    **The agent's, like memory's, because the first remedy is the agent's to try.** A trace log filling the disk is relieved by the reclaim this turn performs; where that is not enough — the safe files do not add up to the shortfall, or the fill is something other than trace logs — the agent frees space or lowers concurrency, neither a question an operator has to be woken for.
+
+    **The id is the episode.** The boundary is when a tend last recorded the disk as not short (`DiskReport.since`), so an acknowledgment covers this shortage and no further: a disk that recovers and fills again next week is heard again, where an id without the episode would be silenced by the first ack forever. The item clears on its own once a reclaim — this turn's or a later one's — brings free space back over the mark.
+
+    **The summary says what is short and what can be reclaimed, and stops.** On a `status` the reclaimable figure is a preview of what the next tend would remove; on a tend it is what this turn did, and the following turn's reading clears the item.
+    """
+    if (disk := result.disk) is None or (tier := disk.tier) is None:
+        return []
+    host = disk.host
+    summary = (
+        f"disk free is {format_bytes(host.free)} of {format_bytes(host.total)}, "
+        f"below the {format_bytes(disk.low_mark)} mark"
+    )
+    if disk.removable:
+        count = len(disk.removable)
+        summary += (
+            f" — {count} dead-process trace log{'s' if count != 1 else ''} "
+            f"({format_bytes(disk.reclaimable)}) can be reclaimed"
+        )
+    else:
+        summary += " — no trace logs are safe to remove"
+    return [
+        Item(
+            id=f"{DISK}:{tier}:{disk.since or 'start'}",
+            kind=DISK,
+            owner=OWNERS[DISK],
+            level=Level.ATTENTION,
+            subject="disk",
+            summary=summary,
+            action="free disk space or lower concurrency; Steward reclaims dead trace logs",
         )
     ]
 

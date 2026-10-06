@@ -33,9 +33,11 @@ from inspect_steward._tend import (
     verdict,
     verdict_line,
 )
+from inspect_steward._tend.disk import DiskReport, Removal
 from inspect_steward._tend.items import (
     ACTION_FAILED,
     DEGRADED,
+    DISK,
     DRIFT,
     MEMORY,
     PARKED,
@@ -51,6 +53,7 @@ from inspect_steward._tend.items import (
 from inspect_steward._tend.items import STUCK as STUCK_SAMPLE
 from inspect_steward._tend.memory import MemoryReport, Projection
 from inspect_steward._worker import (
+    HostDisk,
     HostMemory,
     LiveFleet,
     LiveParked,
@@ -1531,3 +1534,89 @@ def test_an_acknowledged_shortage_does_not_cover_the_next_one(tmp_path: Path) ->
     # and a workspace no tend has recorded yet still has an id to ack
     (fresh,) = memory_items(replace(result, memory=replace(memory(4), since=None)))
     assert fresh.id == "memory:low:start"
+
+
+# --- the disk filling up -----------------------------------------------------
+
+
+def disk(
+    free: int, *, removable: int = 0, since: str | None = "2026-09-19T01:00:00Z"
+) -> DiskReport:
+    gib = 1024**3
+    removals = tuple(
+        Removal(
+            path=Path(f"/traces/trace-{index}.log"),
+            size=gib,
+            pid=index,
+            reason="dead_pid",
+        )
+        for index in range(removable)
+    )
+    return DiskReport(
+        host=HostDisk(total=500 * gib, free=free * gib, path="/traces"),
+        low_mark=2 * gib,
+        removable=removals,
+        since=since,
+    )
+
+
+def disk_items(result: TendResult, **kwargs: Any) -> list[Item]:
+    return [
+        item
+        for item in tend_items(result, ObservedTasks(tasks=[]), InFlight(), **kwargs)
+        if item.kind == DISK
+    ]
+
+
+@pytest.mark.parametrize(
+    ("report", "ids", "said"),
+    [
+        pytest.param(
+            disk(1, removable=3),
+            ["disk:low:2026-09-19T01:00:00Z"],
+            "3 dead-process trace logs (3.0 GiB) can be reclaimed",
+            id="low with reclaimable logs",
+        ),
+        pytest.param(
+            disk(1, removable=0),
+            ["disk:low:2026-09-19T01:00:00Z"],
+            "no trace logs are safe to remove",
+            id="low with nothing safe to remove",
+        ),
+        pytest.param(disk(400, removable=0), [], "", id="healthy"),
+    ],
+)
+def test_a_short_disk_is_the_agents_item(
+    tmp_path: Path, report: DiskReport, ids: list[str], said: str
+) -> None:
+    workspace, _ = prepared(tmp_path, [SynthTask("probe")])
+
+    items = disk_items(replace(turn(workspace), disk=report))
+
+    assert [item.id for item in items] == ids
+    for item in items:
+        assert item.owner is Owner.AGENT
+        assert item.level is Level.ATTENTION
+        assert item.acknowledgeable
+        assert said in item.summary
+        assert item.action is not None and "disk" in item.action
+
+
+def test_an_acknowledged_shortage_does_not_cover_the_next_disk_one(
+    tmp_path: Path,
+) -> None:
+    # the episode is in the id, exactly as memory's is: a disk that recovered and
+    # filled again is a new item, where an ack keyed on the tier alone would have
+    # silenced every shortage after the first
+    workspace, _ = prepared(tmp_path, [SynthTask("probe")])
+    result = turn(workspace)
+    (first,) = disk_items(replace(result, disk=disk(1)))
+    acknowledged = frozenset({first.id})
+
+    assert disk_items(replace(result, disk=disk(1)), acknowledged=acknowledged) == []
+    relapse = disk(1, since="2026-09-19T09:00:00Z")
+    (again,) = disk_items(replace(result, disk=relapse), acknowledged=acknowledged)
+    assert again.id == "disk:low:2026-09-19T09:00:00Z"
+    # and a workspace no tend has recorded yet still has an id to ack
+    (fresh,) = disk_items(replace(result, disk=disk(1, since=None)))
+    assert fresh.id == "disk:low:start"

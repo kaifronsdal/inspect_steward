@@ -9,9 +9,11 @@ Beside `live.py` rather than inside it, because the two answer different questio
 Nothing here raises. A process that exited between being listed and being read contributes nothing, exactly as it contributes nothing to the machine.
 """
 
+import shutil
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import psutil
 
@@ -137,3 +139,36 @@ def host_memory() -> HostMemory:
         swap_total=int(swap.total),
         swap_used=int(swap.used),
     )
+
+
+@dataclass(frozen=True)
+class HostDisk:
+    """How much of a filesystem is left, as the kernel accounts for it.
+
+    **`free`, not `used`.** A near-full disk is what fails the writes that matter — the journal fsync, an eval log, a worker's own trace — and *free* is the figure that falls as those artifacts accumulate. The host's view of one mount: a path on a different device answers for a different disk, which is why the path measured is carried alongside the figures.
+    """
+
+    total: int
+    """The filesystem's capacity, in bytes."""
+
+    free: int
+    """What is left on it, in bytes."""
+
+    path: str
+    """The path whose mount was measured, for a reader working out which disk this is."""
+
+
+def host_disk(path: Path) -> HostDisk | None:
+    """Read how much of a path's filesystem is free.
+
+    Args:
+        path: Any path on the filesystem to measure. The reading is the mount's, so any existing path on it gives the same answer.
+
+    Returns:
+        The filesystem's figures, or `None` where the path cannot be read — a mount that went away, a permission the process lacks — so that a disk reading never fails a turn.
+    """
+    try:
+        usage = shutil.disk_usage(path)
+    except OSError:
+        return None
+    return HostDisk(total=int(usage.total), free=int(usage.free), path=str(path))

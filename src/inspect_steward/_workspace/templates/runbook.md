@@ -242,6 +242,7 @@ A smoke that fails twice is a stop. Notify it explicitly: nothing posts before t
 | `unwritten` | you | a task has no write-up in `analysis.md` | write the section |
 | `journal_damage` | you | journal lines could not be read | read them; ack with what they held |
 | `memory` | you | the host is short of memory, or on course to run out | see Memory |
+| `disk` | you | free disk is below the mark; Steward is reclaiming trace logs | see Disk |
 
 ### Dispositions
 
@@ -290,6 +291,14 @@ Every tend reads the host beside the fleet: `memory:` in a status, `**memory**` 
 - **Where swap cannot be added**: no sudo, or a container or pod, which dies at its cgroup limit whatever the host has. Lower concurrency instead: `steward ramp hold --reason "host memory"`, then `inspect ctl config TASK --max-samples N` down on the heaviest tasks, the downward retune that is already yours. In-flight samples drain rather than stop, so it takes minutes. The item is yours, so `raise` refuses it: reach the operator with `steward notify --kind attention`, the swap commands, size and path ready to paste, and leave the item open until the next tend's line shows headroom back. A pinned setpoint is not yours to lower; there swap is the only lever, so notify with `--kind stopped` and wait.
 - **On macOS** swap is the system's and there is nothing to add. Lower concurrency.
 - **Never raise `max_samples` back by hand.** Low headroom holds the climb (see Tuning), and once headroom returns the ramp climbs back one step per clean window. `steward ramp resume` if you held it.
+
+### Disk
+
+Every tend reads free disk beside the fleet: `disk:` in a status, `**disk**` in a collect. A long-running or crashed scan can leave an inspect or scout `trace-<pid>.log` of unbounded size, which inspect's own ten-file cap never reclaims — so when free space falls below `disk_low` (2 GiB by default) Steward removes the trace logs whose process has exited, largest-first, until there is room. A running scan's own trace log is never touched, and an eval log never is.
+
+- **This is Steward's to do, not yours.** The `disk` item is a report that the reclaim is happening; left alone, the next tend's reading shows free space back and the item clears itself. The summary says how much can be reclaimed, or `no trace logs are safe to remove` where the fill is something else.
+- **When it persists** — the item does not clear, because the safe trace logs did not add up to the shortfall or the disk is filling with something other than trace logs — find what is filling the disk (`du -sh *` under the data and log roots), then free space or lower concurrency (`steward ramp hold`, `inspect ctl config TASK --max-samples N`). Reach the operator with `steward notify --kind attention` if you cannot. Never delete an eval log to make room.
+- **To tune or switch off**: `disk_low: 5GiB` for a different floor, `disk_low: false` where a deployment would rather Steward never remove a trace log.
 
 ### Standing rules
 

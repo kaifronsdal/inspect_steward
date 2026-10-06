@@ -98,6 +98,10 @@ REJECTED: list[tuple[str, str, str]] = [
     # `heartbeat` is on by default, so `true` adds nothing, and it is a duration
     ("a heartbeat that says nothing", "heartbeat: true\n", "adds nothing"),
     ("a bare heartbeat number", "heartbeat: 30\n", "unit"),
+    # `disk_low` is a size on by default, refused the way `heartbeat` is
+    ("a disk floor that says nothing", "disk_low: true\n", "adds nothing"),
+    ("a bare disk floor number", "disk_low: 5\n", "unit"),
+    ("a disk floor with no unit YAML read as int", "disk_low: 5000000\n", "unit"),
     # `scan_model` is shaped like `notification` and refused the same way
     ("a scan model that says nothing", "scan_model: true\n", "says nothing about"),
     ("a scan model spelled as a word", "scan_model: none\n", "is `false` now"),
@@ -145,6 +149,21 @@ def test_the_heartbeat_is_a_duration_false_or_absent(
     text: str, expected: object, tmp_path: Path
 ) -> None:
     assert read_directives(written(tmp_path, text)).heartbeat == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        pytest.param("disk_low: 5GiB\n", 5 * 1024**3, id="a_size_stored_as_bytes"),
+        pytest.param("disk_low: 500MiB\n", 500 * 1024**2, id="a_short_unit"),
+        pytest.param("disk_low: false\n", False, id="off"),
+        pytest.param("", None, id="absent_is_the_default"),
+    ],
+)
+def test_the_disk_floor_is_a_size_false_or_absent(
+    text: str, expected: object, tmp_path: Path
+) -> None:
+    assert read_directives(written(tmp_path, text)).disk_low == expected
 
 
 def test_a_file_in_the_wrong_encoding_is_refused_by_name(tmp_path: Path) -> None:
