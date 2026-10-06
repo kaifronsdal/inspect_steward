@@ -1,5 +1,7 @@
 ## Unreleased
 
+- systemd timer: set `KillMode=process` on the tend service. Under the default `control-group`, systemd killed every process left in the unit's cgroup when the oneshot tend exited, so a worker a scheduled tend started was killed seconds later (`start_new_session` does not leave the cgroup). Re-arm the timer (`steward timer arm`) to pick up the new unit; a hand-written `killmode.conf` drop-in is no longer needed.
+
 - Reasoning-on-the-wire smoke: count Google's `thoughtSignature` marker, the camelCase key the genai SDK serializes on the wire, alongside the snake_case `thought_signature`. Without it a Google request that plainly carried a replayed reasoning block counted zero markers, and the check read a real replay as a dropped block — a false failure rather than a signature defect upstream.
 
 ## 0.2.8 (23 September 2026)
