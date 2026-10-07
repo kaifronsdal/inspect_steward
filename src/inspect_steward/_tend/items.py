@@ -35,7 +35,7 @@ from .._evalset.observe import ObservedTasks, TaskObservation, TaskState
 from .._schedule import InFlight, Summary, attempts_made
 from .._util.duration import format_age, format_duration, is_after, seconds_since
 from .._util.size import format_bytes
-from .._worker import LiveParked, LiveStuck, acp_sockets
+from .._worker import LiveParked, LiveStuck, StuckSample, acp_sockets
 from .._workspace import DEFAULT_TEND_INTERVAL, Ack, Armed, Signature
 from .progress import display_keys
 
@@ -565,9 +565,9 @@ def _stuck(result: "TendResult", lookup: dict[str, TaskObservation]) -> list[Ite
 
     Not failed and not parked — a `bash` that never returns, a connection held open silently — which is why neither the anomaly queue nor the park can say it: nothing raised, and nobody is being asked anything. One item per task, whatever it holds, because the escalation is per task and a reader climbing the ladder wants one place to stand.
 
-    **The id encodes the episode — what the item still asks about — plus `:asked`.** An acknowledgment is permanent per id (`read_acks` never expires one), so an id keyed on the task alone would let "I know, leave it" about this week's sample silence next week's forever. The digest is over the *un-asked* pending calls plus every call-less stuck sample (`_asks`): it re-arms on a different sample, when another call joins, and when rung 1 is spent on one call of several — the next call's ask is a new item the old acknowledgment does not cover, where a digest of the sample set alone would let acknowledging the first cancellation hide every rung-one action after it — and stays quiet while the same condition merely persists. The `:asked` flip is a new id for the same reason — the escalation re-notifies through the ordinary appeared diff, and an acknowledgment of the quiet wait does not cover the wedged one. The actions are execution.md §7.5's ladder, one rung at a time: `cancel-tool-call` costs one tool result, `cancel` costs the sample, and neither is ever pre-filled with an outcome — recording how a cancelled sample counts is the decision, so `--action` is left for the operator to type.
+    **The id encodes the episode — what the item still asks about — plus `:asked`.** An acknowledgment is permanent per id (`read_acks` never expires one), so an id keyed on the task alone would let "I know, leave it" about this week's sample silence next week's forever. The digest is over the *un-asked* pending calls plus every call-less stuck sample (`_asks`): it re-arms on a different sample, when another call joins, and when rung 1 is spent on one call of several — the next call's ask is a new item the old acknowledgment does not cover, where a digest of the sample set alone would let acknowledging the first cancellation hide every rung-one action after it — and stays quiet while the same condition merely persists. The `:asked` flip is a new id for the same reason — the escalation re-notifies through the ordinary appeared diff, and an acknowledgment of the quiet wait does not cover the wedged one. The actions are execution.md §7.5's ladder, one rung at a time: `cancel-tool-call` costs one tool result, `cancel` costs the sample's remaining work.
 
-    **Owner is the agent only where `stuck_cancel` admits everything stuck and nothing has been asked yet** — rung 1 is the one pre-authorizable act, and once it has been spent the delivered-but-unheeded state is an operator's. The agent acts through `inspect ctl` itself and journals via the `ack --by agent` narrow exception; the tend never cancels anything.
+    **Owner follows the standing grants, one rung at a time.** While an un-asked call remains, the item is rung 1's: the agent's where `stuck_cancel` admits every un-asked function, an operator's otherwise. Once rung 1 is spent (every call asked, nothing stopped) or there was never a call to cancel, the item is rung 2's: the agent's where `stuck_action` names an outcome — the carried `sample cancel` then pre-fills that `--action` (`cancel` for a `retry`, whose requeue the runbook carries) — an operator's where it names none, or where the sample's one standing retry is already spent (`_rung_two`). A second requeue is never granted: a sample that wedged again after its fresh attempt is a person's. The agent acts through `inspect ctl` itself and journals via `note` and the `ack --by agent` narrow exception; the tend never cancels anything.
     """
     items: list[Item] = []
     for row in result.progress.rows:
@@ -575,10 +575,18 @@ def _stuck(result: "TendResult", lookup: dict[str, TaskObservation]) -> list[Ite
         if not stuck.count:
             continue
         episode = _digest8(",".join(sorted(_asks(stuck))))
-        suffix = ":asked" if stuck.asked else ""
+        # retried-ness is read whenever rung 2 is in play, independent of the
+        # grant: `:retried` is in the id for the same reason `:asked` is -- an
+        # ack of the pre-retry episode must not silence the wedge that came
+        # back after it, and a degraded turn that cannot read `stuck_action`
+        # must not shed the suffix back onto an acked id. While an un-asked
+        # call remains the item is rung 1's and says nothing about retries.
+        spent = not _unasked(stuck) and _retry_spent(row.task_id, stuck, result.retried)
+        suffix = (":asked" if stuck.asked else "") + (":retried" if spent else "")
+        rung_two = _rung_two(row.task_id, stuck, result.stuck_action, result.retried)
         owner = (
             Owner.AGENT
-            if not stuck.asked and _cancel_admitted(stuck, result.stuck_cancel)
+            if _cancel_admitted(stuck, result.stuck_cancel) or rung_two is not None
             else OWNERS[STUCK]
         )
         items.append(
@@ -589,37 +597,88 @@ def _stuck(result: "TendResult", lookup: dict[str, TaskObservation]) -> list[Ite
                 owner=owner,
                 level=Level.ATTENTION,
                 subject=row.identifier,
-                summary=_stuck_summary(row.key, stuck),
-                action=_stuck_action(row.task_id, stuck),
+                summary=_stuck_summary(
+                    row.key, stuck, spent=spent and rung_two is None
+                ),
+                action=_stuck_action(row.task_id, stuck, rung_two=rung_two),
             )
         )
     return items
 
 
 def _asks(stuck: LiveStuck) -> set[str]:
-    """The episode: every ask still open — un-asked pending calls by id, and the call-less stuck samples nothing can be asked of."""
-    return {
-        f"{one.sample_id}:{one.epoch}:{one.call_id}"
-        if one.function
-        else f"{one.sample_id}:{one.epoch}"
+    """The episode: what the item still asks about, per sample and per rung.
+
+    A sample's un-asked pending calls are rung-1 asks, keyed by call id. A sample past rung 1 — every call asked and unheeded, or no call to ask — contributes its rung-2 ask, keyed by sample. Digesting rung 1 alone would make every fully-asked episode identical (an empty set), and digesting the fully-asked phase alone would miss a sample climbing to rung 2 beside a call-less one that never left it — either way one permanent ack silences a later sample's escalation it never covered.
+    """
+    unasked = {
+        (one.sample_id, one.epoch)
         for one in stuck.samples
-        if not one.cancel_requested
+        if one.function and not one.cancel_requested
     }
+    asks: set[str] = set()
+    for one in stuck.samples:
+        if one.function and not one.cancel_requested:
+            asks.add(f"{one.sample_id}:{one.epoch}:{one.call_id}")
+        elif (one.sample_id, one.epoch) not in unasked:
+            asks.add(f"{one.sample_id}:{one.epoch}")
+    return asks
+
+
+def _unasked(stuck: LiveStuck) -> list[StuckSample]:
+    """The pending calls rung 1 has not been spent on — what the next rung-1 action targets."""
+    return [
+        sample
+        for sample in stuck.samples
+        if sample.function and not sample.cancel_requested
+    ]
 
 
 def _cancel_admitted(stuck: LiveStuck, granted: bool | tuple[str, ...] | None) -> bool:
-    """Whether `stuck_cancel` covers everything stuck here — what hands rung 1 to the agent."""
+    """Whether `stuck_cancel` covers the un-asked calls here — what hands rung 1 to the agent.
+
+    Quantified over the un-asked calls alone, because that is what the carried action targets: a spent ask or a call-less sample sitting beside a fresh pending call must not strand a rung-1 cancel the grant covers with an operator — the ladder climbs one rung at a time, and those entries are the *next* rung's, reached once this one is spent.
+    """
     if not granted:
         return False
-    return all(
-        sample.function
-        and (granted is True or sample.function in granted)
-        and not sample.cancel_requested
-        for sample in stuck.samples
+    unasked = _unasked(stuck)
+    return bool(unasked) and all(
+        granted is True or sample.function in granted for sample in unasked
     )
 
 
-def _stuck_summary(key: str, stuck: LiveStuck) -> str:
+def _rung_two(
+    task_id: str,
+    stuck: LiveStuck,
+    action: str | None,
+    retried: frozenset[tuple[str, str, int]],
+) -> str | None:
+    """The `--action` the standing `stuck_action` pre-fills on rung 2, or `None` where rung 2 is not the agent's.
+
+    Nothing while any un-asked call remains: rung 2 appears only once rung 1 is spent or there was never a call to cancel. A standing `retry` pre-fills `--action cancel` (the requeue follows, per the runbook) and is spent per sample — a wedge touching any sample the journal's retried set names is an operator's whole (`_retry_spent`).
+    """
+    if not task_id or action in (None, "none") or _unasked(stuck) or not stuck.samples:
+        return None
+    if action == "retry":
+        if _retry_spent(task_id, stuck, retried):
+            return None
+        return "cancel"
+    return action
+
+
+def _retry_spent(
+    task_id: str, stuck: LiveStuck, retried: frozenset[tuple[str, str, int]]
+) -> bool:
+    """Whether any sample stuck here already had its one standing retry.
+
+    Any, not every: a spent sample sharing the task's stuck set with a fresh one would otherwise ride the fresh one's grant into a second requeue — the one thing the guard exists to refuse — and the item cannot say "all but s1" to an agent working a listing.
+    """
+    return any(
+        (task_id, sample.sample_id, sample.epoch) in retried for sample in stuck.samples
+    )
+
+
+def _stuck_summary(key: str, stuck: LiveStuck, *, spent: bool = False) -> str:
     """What stopped, inside what, for how long — and explicitly what it is not."""
     functions = sorted({sample.function for sample in stuck.samples if sample.function})
     inside = f" inside {', '.join(functions)}" if functions else ""
@@ -637,13 +696,20 @@ def _stuck_summary(key: str, stuck: LiveStuck) -> str:
         )
     if stuck.asked:
         line += "; a cancel was asked and it did not stop"
+    if spent:
+        line += (
+            "; a sample here was already retried once under stuck_action, so "
+            "the outcome is the operator's"
+        )
     return line
 
 
-def _stuck_action(task_id: str, stuck: LiveStuck) -> str | None:
+def _stuck_action(
+    task_id: str, stuck: LiveStuck, *, rung_two: str | None
+) -> str | None:
     """The ladder's next rung, as one command — never two rungs at once.
 
-    While any pending call is still un-asked, the command is rung 1 and only rung 1: `sample cancel` ends the whole sample and records an outcome, which is more than any `stuck_cancel` grant covers — so a sample wedged on several calls names one of them by id rather than escalating. Rung 2 appears only once rung 1 is spent (every call asked, and nothing stopped) or there was never a call to cancel — with `--action` left off, because recording how the cancelled sample counts is the decision. More than one stuck sample gets the listing, since a ladder is climbed one target at a time.
+    While any pending call is still un-asked, the command is rung 1 and only rung 1: `sample cancel` ends the whole sample and records an outcome, which is more than any `stuck_cancel` grant covers — so a sample wedged on several calls names one of them by id rather than escalating. Rung 2 appears only once rung 1 is spent (every call asked, and nothing stopped) or there was never a call to cancel — carrying the `--action` the standing `stuck_action` pre-fills (`_rung_two`; for a `retry` that is `cancel`, and the requeue follows per the runbook), or bare where no grant covers it, because recording how the cancelled sample counts is then the operator's decision — and the bare line is a starting point rather than a neutral act, since inspect defaults an omitted `--action` to `score`. More than one stuck sample gets the listing, since a ladder is climbed one target at a time.
 
     Every interpolated value is shell-quoted. A sample id is the dataset's free text — the one field here Steward does not mint — and this line is one the runbook tells an agent to run: an id with a space would silently target the wrong sample, and worse is imaginable.
     """
@@ -684,17 +750,18 @@ def _stuck_action(task_id: str, stuck: LiveStuck) -> str | None:
                 first.call_id,
             ]
         )
-    return shlex.join(
-        [
-            "inspect",
-            "ctl",
-            "sample",
-            "cancel",
-            task_id,
-            sample.sample_id,
-            str(sample.epoch),
-        ]
-    )
+    command = [
+        "inspect",
+        "ctl",
+        "sample",
+        "cancel",
+        task_id,
+        sample.sample_id,
+        str(sample.epoch),
+    ]
+    if rung_two is not None:
+        command += ["--action", rung_two]
+    return shlex.join(command)
 
 
 def _tuning(result: "TendResult", lookup: dict[str, TaskObservation]) -> list[Item]:
@@ -1728,28 +1795,28 @@ def _findings_clause(dismissed: int, scored: int) -> str:
 
 
 def _dismissed_findings(anomalies: Anomalies) -> int:
-    """Instances of settled `scan:` windows a ruling dismissed.
+    """Settled `scan:` windows a ruling dismissed, counted as findings.
 
-    Counted rather than journalled: a dismissal is already a `ruling` event, so deriving the number from the fold keeps one record of the decision and no second one that could disagree with it.
+    A finding is a class, not a sample: one grader probed by two samples is one thing the operator is told about, and the signoff echo (`_findings_line`) counts the same way, over the same kinds — the two surfaces reaching the signer must not give two numbers for one fact, and a dismissed `scanerror:` window is a finding the scanners raised too. Counted rather than journalled: a dismissal is already a `ruling` event, so deriving the number from the fold keeps one record of the decision and no second one that could disagree with it.
     """
     return sum(
-        anomaly.evidence.count
+        1
         for anomaly in anomalies.settled
-        if anomaly.kind == "scan"
+        if anomaly.kind in ("scan", "scanerror")
         and anomaly.ruling is not None
         and anomaly.ruling.disposition is Disposition.DISMISS
     )
 
 
 def _scored_findings(anomalies: Anomalies) -> int:
-    """Instances of settled `scan:` windows a ruling kept scored as recorded.
+    """Settled `scan:` windows a ruling kept scored as recorded, counted as findings.
 
-    The construction posture's output: a mechanism confirmed and a number that stands anyway, which is the one count an operator must not learn after signing. Counted from the fold like `_dismissed_findings`, for the same one-record reason.
+    The construction posture's output: a mechanism confirmed and a number that stands anyway, which is the one count an operator must not learn after signing. Counted from the fold like `_dismissed_findings`, in the same unit, for the same reasons.
     """
     return sum(
-        anomaly.evidence.count
+        1
         for anomaly in anomalies.settled
-        if anomaly.kind == "scan"
+        if anomaly.kind in ("scan", "scanerror")
         and anomaly.ruling is not None
         and anomaly.ruling.disposition is Disposition.SCORE
     )

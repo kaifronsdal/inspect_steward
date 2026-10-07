@@ -67,7 +67,7 @@ preauthorized:
   'error:ReadTimeout@*': rerun
 ```
 
-When a new class matches a pattern, the tend records a ruling with `by: policy` naming the pattern and applies it in the same turn. Nothing is pre-authorized by default, and if a pre-authorized re-run fails, the pattern stops matching that class until an operator has looked.
+When a new class matches a pattern, the tend records a ruling with `by: policy` naming the pattern and applies it in the same turn. No anomaly ruling is pre-authorized by default, and if a pre-authorized re-run fails, the pattern stops matching that class until an operator has looked.
 
 Anything more nuanced than a pattern goes in `policies:` as prose, which your agent applies when one is in session:
 
@@ -101,11 +101,17 @@ What to do about a stuck sample is an escalation ladder. The item carries the ap
 | Rung | Command | What it costs |
 |----|----|----|
 | Cancel the tool call | `inspect ctl sample cancel-tool-call TASK ID EPOCH` | The call fails inside the sample, which continues |
-| Cancel the sample | `inspect ctl sample cancel TASK ID EPOCH` | The sample stops, recorded as you choose with `--action` |
+| Cancel the sample | `inspect ctl sample cancel TASK ID EPOCH` | The sample stops, recorded per `--action` |
 | Requeue the sample | `inspect ctl sample requeue TASK ID EPOCH` | The sample's work is discarded and it runs again from the start |
 
-A cancel is a request. If one was asked for and the call still has not stopped, the item says so, which is your signal to climb a rung.
+A cancel is a request. If one was asked for and the call still has not stopped, the item says so, which is the signal to climb a rung.
 
-You can grant the first rung in advance. `stuck_cancel: true` lets your agent cancel any stuck tool call itself, and `stuck_cancel: [bash]` admits only those tools. The higher rungs stay yours, since they discard work.
+The first two rungs are granted to your agent by default, controlled by two settings in `_steward.yaml`.
+
+`stuck_cancel` governs the first rung. The default (`true`) lets the agent cancel any stuck tool call; `stuck_cancel: [bash]` admits only the named tools, and `false` keeps the rung yours.
+
+`stuck_action` governs the second rung: what happens to a sample the first rung did not free, or one that was never inside a tool call. The default (`retry`) cancels and requeues it for a fresh attempt, once per sample. A sample that wedges again after its retry comes back to you. The other values record a terminal outcome: `score` runs the scorer on the work done so far, with a caveat carried into `anomalies.md` and `analysis.md`; `error` marks the sample errored, decided with the run's other errors at signoff (inspect refuses it for `fails_on_error` samples, and the agent falls back to `score`); `cancel` records it cancelled, with no score and no error. `none` withdraws the rung.
+
+The agent journals every act on the ladder with `steward note`. A `score` or `error` outcome is ruled at signoff like any other operator termination, so the final report says what happened and why; a `cancel` outcome leaves no window, and its record is the journal note and the agent's write-up in `analysis.md`. If the carried command is run with no `--action` (after a spent retry, or under `stuck_action: none`), inspect's own default records `score`. Requeuing beyond the single guarded retry always stays yours.
 
 A stuck sample is not an anomaly and there is nothing to rule on. It is reported while it holds and gone when the sample moves.

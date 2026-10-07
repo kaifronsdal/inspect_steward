@@ -566,6 +566,37 @@ class TestProposals:
         assert "score --by agent" in output
         assert "prop-" in output
 
+    def test_a_cautioned_proposal_keeps_json_stdout_parseable(
+        self, workspace: Workspace
+    ) -> None:
+        # the caution goes to stderr, so a consumer parsing `--json` stdout
+        # still gets one blob
+        hacking = scan_class(
+            "scoring_integrity",
+            "reward_hacking",
+            task="done",
+            identifier=DONE.identifier,
+        )
+        opened(workspace, hacking, count=2, kind="scan", tasks=[DONE.identifier])
+
+        result = CliRunner().invoke(
+            steward,
+            [
+                "propose",
+                "reward_hacking",
+                "--action",
+                "zero",
+                "--reason",
+                "r",
+                "--json",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["action"] == "zero"
+        assert "benchmark's construction" in result.stderr
+
     def test_a_rerun_proposal_of_a_construction_class_is_not_cautioned(
         self, workspace: Workspace
     ) -> None:

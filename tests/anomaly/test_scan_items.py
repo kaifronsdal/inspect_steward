@@ -330,7 +330,9 @@ def test_the_signer_is_told_what_was_dismissed(tmp_path: Path) -> None:
 
     ready = [item for item in turn(workspace).items if item.kind == SIGNOFF_READY]
 
-    assert "2 scan findings were looked at and dismissed" in ready[0].summary
+    # a finding is a class, not a sample: two flagged samples in one window are
+    # one thing the signer is told about, in the same unit the signoff echo uses
+    assert "1 scan finding was looked at and dismissed" in ready[0].summary
 
 
 def test_the_signer_is_told_what_was_scored_as_recorded(tmp_path: Path) -> None:
@@ -344,7 +346,7 @@ def test_the_signer_is_told_what_was_scored_as_recorded(tmp_path: Path) -> None:
     result = turn(workspace)
 
     ready = [item for item in result.items if item.kind == SIGNOFF_READY]
-    assert "2 scan findings were confirmed and scored as recorded" in ready[0].summary
+    assert "1 scan finding was confirmed and scored as recorded" in ready[0].summary
     assert "analysis.md" in ready[0].summary
     assert result.verdict is Verdict.COMPLETE
 

@@ -507,6 +507,33 @@ def read_acks(events: list[JournalEvent]) -> dict[str, Ack]:
     return acks
 
 
+def read_retried(events: list[JournalEvent]) -> frozenset[tuple[str, str, int]]:
+    """Fold a journal down to the samples the standing stuck retry has been spent on.
+
+    A cancel-and-requeue leaves no trace in inspect's own record — a cancellation is deliberately excluded from the sample's retry history upstream — so the one place "this sample already had its retry" can live is here, in the structured `retried` field a `steward note --retried` leaves on its event. The fold is a set, never a count: the grant is retry-*once*, so the second wedge of a named sample is an operator's however many notes name it.
+
+    Args:
+        events: Events in file order, as `read_journal` returns them.
+
+    Returns:
+        The retried samples, as `(task_id, sample_id, epoch)`.
+    """
+    retried: set[tuple[str, str, int]] = set()
+    for event in events:
+        if event.type != NOTED:
+            continue
+        record = event.payload.get("retried")
+        if not isinstance(record, dict):
+            continue
+        payload = cast(dict[str, Any], record)
+        task = payload.get("task")
+        sample = payload.get("sample")
+        epoch = payload.get("epoch")
+        if isinstance(task, str) and isinstance(sample, str) and isinstance(epoch, int):
+            retried.add((task, sample, epoch))
+    return frozenset(retried)
+
+
 def read_signoff(events: list[JournalEvent]) -> Signature | None:
     """Fold a journal down to the attestation in force.
 

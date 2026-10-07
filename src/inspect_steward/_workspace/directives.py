@@ -25,7 +25,7 @@ That §5.3 rejected markdown-with-front-matter for `journal.jsonl` is not in ten
 import os
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import yaml
 
@@ -173,12 +173,20 @@ class Directives(BaseModel):
     **A reporting threshold, never a limit.** Nothing is cancelled when it trips — a `stuck` item appears, carrying the `inspect ctl` line that would act. The enforced budget is the definition's `working_limit`, which is refused here by name; this key decides when an operator hears about a sample the limit has not caught. Passes the admission test the same way `stall_after` does: watching a fleet for silence is Steward's invention, and no `eval_set()` argument reaches it. Default: `DEFAULT_STUCK_AFTER` (`_worker.live`), five hours.
     """
 
-    stuck_cancel: bool | list[str] | None = Field(default=None)
-    """Which stuck pending tool calls the agent may cancel without asking, or unset for none.
+    stuck_cancel: bool | list[str] | None = Field(default=True)
+    """Which stuck pending tool calls the agent may cancel without asking. Default: any.
 
-    `true` admits any tool function; a list admits only those named (`stuck_cancel: [bash]`); unset or `false` admits nothing — the default, because cancelling a call loses whatever it was mid-way through. What it moves is the `stuck` item's owner: a task whose every stuck sample is a pending call this key admits is the agent's to act on (rung 1 of the ladder, execution.md §7.5), and everything else stays an operator's.
+    `true` — the default — admits any tool function; a list admits only those named (`stuck_cancel: [bash]`); `false` withdraws the grant, for a workspace where cancelling a call (which loses whatever it was mid-way through) must stay a person's. What it moves is the `stuck` item's owner: a task whose every un-asked stuck call this key admits is the agent's to act on (rung 1 of the ladder, execution.md §7.5), and everything else stays an operator's.
 
     `true` is meaningful here where `notification: true` is refused, because *any tool call* is a real universal where *somewhere* is not an address.
+    """
+
+    stuck_action: Literal["retry", "score", "error", "cancel", "none"] | None = Field(
+        default="retry"
+    )
+    """What the agent may do with a stuck sample itself, once cancelling the call did not free it. Default: `retry`.
+
+    Rung 2 of the ladder (execution.md §7.5): once every stuck call has been asked to cancel and none stopped — or the sample was never inside a tool call, so there is no rung 1 — the item carries `inspect ctl sample cancel ...` and this key says whose it is and what outcome rides on it. `retry` — the default — cancels and requeues for a fresh attempt, **once per sample**: a hang is usually the run's fault and a run fault is what re-running fixes, but a sample that wedges again after its retry is a person's. `score` scores the work done so far and the sample counts as it stands; `error` marks it errored, to be adjudicated with the run's other errors (inspect refuses it for `fails_on_error` samples); `cancel` records it cancelled — no score, no error, the quiet drop. `none` grants nothing: rung 2 stays an operator's, with `--action` theirs to type (inspect defaults an omitted one to `score`). A `score` lands as a `limit:operator` window and an `error` as an error window — quiet while the run goes, ruled at signoff, carried into `anomalies.md` and `analysis.md`. A `cancel` opens no window at all: its record is the agent's journal note and `analysis.md`.
     """
 
     @field_validator("stuck_cancel", mode="before")
@@ -186,7 +194,7 @@ class Directives(BaseModel):
     def _stuck_cancel(cls, value: object) -> object:
         """A boolean or a list of tool function names, refused with its meaning otherwise.
 
-        `mode="before"` for the list case: strict validation would report a list holding an integer as a type error against the whole field, when the author needs told which entry is wrong. An empty list admits nothing, which is what unset already says.
+        `mode="before"` for the list case: strict validation would report a list holding an integer as a type error against the whole field, when the author needs told which entry is wrong. An empty list normalizes to `None`, which grants nothing — the spellable form of `false`, not of the default.
         """
         if not isinstance(value, list):
             return value
@@ -198,6 +206,25 @@ class Directives(BaseModel):
                     f"names — entry {index + 1} is not a name: {entry!r}"
                 )
         return entries or None
+
+    @field_validator("stuck_action", mode="before")
+    @classmethod
+    def _stuck_action(cls, value: object) -> object:
+        """One of the outcomes by name, with `false` accepted as `none`.
+
+        Every sibling grant's off-switch is `false`, so somebody will type `stuck_action: false` — it means what they meant. Anything else that is not one of the outcomes is refused with the menu, because a mistyped outcome silently defaulting would exercise an authority nobody granted.
+        """
+        if value is False:
+            return "none"
+        if value is None or (
+            isinstance(value, str)
+            and value in ("retry", "score", "error", "cancel", "none")
+        ):
+            return value
+        raise ValueError(
+            f"should be one of `retry`, `score`, `error`, `cancel`, or `none` "
+            f"— not {value!r}"
+        )
 
     preauthorized: dict[str, str] | bool | None = Field(default=None)
     """Rulings granted in advance: anomaly-class patterns mapped to the disposition each is authorized to receive, `false` to decline every standing grant, or `None` for none.
