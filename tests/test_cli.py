@@ -4,7 +4,12 @@ import pytest
 from click.testing import CliRunner
 from inspect_steward._cli.main import steward
 from inspect_steward._evalset.manifest import write_manifest
-from inspect_steward._workspace import NOTED, create_workspace, read_journal
+from inspect_steward._workspace import (
+    NOTED,
+    create_workspace,
+    read_journal,
+    read_retried,
+)
 
 from ._logs import SynthTask, synth_manifest
 
@@ -101,3 +106,32 @@ def test_a_note_is_one_journal_append_and_a_blank_one_is_refused(
     assert len(notes) == 1
     assert notes[0]["by"] == "agent"
     assert notes[0]["text"] == "grader timing out since 01:40; suspect the provider"
+    assert "retried" not in notes[0]
+
+
+def test_a_retried_note_lands_the_structured_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the retry-once guard reads this and nothing else: inspect erases an
+    # operator cancellation from the sample's own retry history, so the note's
+    # structured field is the one record the standing retry was spent
+    workspace = create_workspace(tmp_path, git=False).workspace
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+
+    noted = runner.invoke(
+        steward,
+        ["note", "stuck ladder rung 2: retried", "--retried", "T1", "s1", "1"],
+    )
+    assert noted.exit_code == 0, noted.output
+
+    bad_epoch = runner.invoke(
+        steward, ["note", "retried", "--retried", "T1", "s1", "one"]
+    )
+    assert bad_epoch.exit_code != 0
+    assert "epoch is a number" in bad_epoch.output
+
+    events = read_journal(workspace.journal).events
+    (note,) = [event.payload for event in events if event.type == NOTED]
+    assert note["retried"] == {"task": "T1", "sample": "s1", "epoch": 1}
+    assert read_retried(events) == frozenset({("T1", "s1", 1)})

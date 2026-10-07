@@ -66,6 +66,7 @@ from inspect_steward._workspace import (
     COLLECTED,
     DISARMED,
     LAUNCHED,
+    NOTED,
     SIGNOFF,
     Workspace,
     append_event,
@@ -480,12 +481,12 @@ def stuck_run(
 def test_a_stuck_sample_carries_the_ladder_s_first_rung(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # nothing pre-authorized: the condition is reported, the command is ready,
-    # and running it is an operator's act
+    # rung 1 is the agent's by default: the condition is reported with the
+    # command ready, and the grant is withdrawn per workspace, not granted
     workspace = stuck_run(tmp_path, monkeypatch, wedged())
     item = items(workspace)[STUCK_SAMPLE]
 
-    assert item.owner is Owner.OPERATOR
+    assert item.owner is Owner.AGENT
     assert item.level is Level.ATTENTION
     assert item.acknowledgeable
     assert item.id.startswith("stuck:probe:")
@@ -501,7 +502,8 @@ def test_a_stuck_sample_carries_the_ladder_s_first_rung(
         pytest.param("stuck_cancel: [bash]\n", "bash", Owner.AGENT, id="named"),
         pytest.param("stuck_cancel: true\n", "bash", Owner.AGENT, id="any"),
         pytest.param("stuck_cancel: [bash]\n", "python", Owner.OPERATOR, id="unnamed"),
-        pytest.param("", "bash", Owner.OPERATOR, id="ungranted"),
+        pytest.param("", "bash", Owner.AGENT, id="default"),
+        pytest.param("stuck_cancel: false\n", "bash", Owner.OPERATOR, id="withdrawn"),
     ],
 )
 def test_the_grant_decides_who_holds_rung_one(
@@ -518,17 +520,16 @@ def test_the_grant_decides_who_holds_rung_one(
     assert items(workspace)[STUCK_SAMPLE].owner is owner
 
 
-def test_an_unheeded_cancel_is_a_new_item_and_a_person_s(
+def test_an_unheeded_cancel_is_a_new_item_and_the_second_rung(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The `:asked` flip re-notifies through the ordinary appeared diff.
 
-    Rung 1 has been spent, so the grant no longer covers it whatever the file
-    says — the delivered-but-unheeded state escalates, and never repeats the
-    ask.
+    Rung 1 has been spent, and under the default `stuck_action: retry` the
+    second rung is still the agent's: cancel for a fresh attempt, with the
+    requeue and the retried note carried by the runbook.
     """
     workspace = stuck_run(tmp_path, monkeypatch, wedged())
-    workspace.directives.write_text("stuck_cancel: [bash]\n", encoding="utf-8")
     quiet = items(workspace)[STUCK_SAMPLE]
 
     stuck_run(tmp_path, monkeypatch, wedged(asked=True))
@@ -536,9 +537,241 @@ def test_an_unheeded_cancel_is_a_new_item_and_a_person_s(
 
     assert quiet.id != asked.id
     assert asked.id.endswith(":asked")
-    assert asked.owner is Owner.OPERATOR
+    assert asked.owner is Owner.AGENT
     assert "a cancel was asked and it did not stop" in asked.summary
-    assert asked.action == "inspect ctl sample cancel T1 s1 1"
+    assert asked.action == "inspect ctl sample cancel T1 s1 1 --action cancel"
+
+
+@pytest.mark.parametrize(
+    ("directive", "owner", "action"),
+    [
+        pytest.param(
+            "stuck_action: score\n",
+            Owner.AGENT,
+            "inspect ctl sample cancel T1 s1 1 --action score",
+            id="score",
+        ),
+        pytest.param(
+            "stuck_action: error\n",
+            Owner.AGENT,
+            "inspect ctl sample cancel T1 s1 1 --action error",
+            id="error",
+        ),
+        pytest.param(
+            "stuck_action: cancel\n",
+            Owner.AGENT,
+            "inspect ctl sample cancel T1 s1 1 --action cancel",
+            id="cancel",
+        ),
+        pytest.param(
+            "stuck_action: none\n",
+            Owner.OPERATOR,
+            "inspect ctl sample cancel T1 s1 1",
+            id="none",
+        ),
+        pytest.param(
+            "stuck_action: false\n",
+            Owner.OPERATOR,
+            "inspect ctl sample cancel T1 s1 1",
+            id="false-means-none",
+        ),
+    ],
+)
+def test_the_standing_outcome_decides_who_holds_rung_two(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    directive: str,
+    owner: Owner,
+    action: str,
+) -> None:
+    workspace = stuck_run(tmp_path, monkeypatch, wedged(asked=True))
+    workspace.directives.write_text(directive, encoding="utf-8")
+    item = items(workspace)[STUCK_SAMPLE]
+
+    assert item.owner is owner
+    assert item.action == action
+
+
+def test_a_call_less_stuck_sample_starts_at_rung_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a silent generate has no call to cancel, so there is no rung 1 to spend
+    # -- under the default retry it is the agent's straight away
+    silent = LiveStuck(
+        count=1,
+        oldest_idle=7200.0,
+        samples=(StuckSample(sample_id="s1", epoch=1, idle=7200.0),),
+    )
+    workspace = stuck_run(tmp_path, monkeypatch, silent)
+    item = items(workspace)[STUCK_SAMPLE]
+
+    assert item.owner is Owner.AGENT
+    assert not item.id.endswith(":asked")
+    assert item.action == "inspect ctl sample cancel T1 s1 1 --action cancel"
+
+
+def test_a_second_wedge_after_the_retry_is_an_operator_s(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The standing retry is spent per sample, and the journal is its memory.
+
+    inspect erases an operator cancellation from the sample's own retry
+    history, so the re-run reads as a first run on the wire — the `--retried`
+    note is the one record that this sample already had its fresh attempt,
+    and the next wedge goes to a person with the outcome theirs to choose.
+    The id carries `:retried` so an ack of the pre-retry episode does not
+    silence the wedge that came back after it.
+    """
+    workspace = stuck_run(tmp_path, monkeypatch, wedged(asked=True))
+    before = items(workspace)[STUCK_SAMPLE]
+    assert before.owner is Owner.AGENT
+
+    append_event(
+        workspace.journal,
+        NOTED,
+        by="agent",
+        text="stuck ladder rung 2: retried under stuck_action",
+        retried={"task": "T1", "sample": "s1", "epoch": 1},
+    )
+    after = items(workspace)[STUCK_SAMPLE]
+
+    assert after.id != before.id
+    assert after.id.endswith(":retried")
+    assert after.owner is Owner.OPERATOR
+    assert after.action == "inspect ctl sample cancel T1 s1 1"
+    assert "already retried once under stuck_action" in after.summary
+
+
+def test_an_ack_of_one_samples_rung_two_does_not_silence_the_next(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rung-2 phase digests the samples themselves.
+
+    Every all-asked episode used to digest an empty ask set, so every sample's
+    rung-2 item in a task shared one id — and acking the first silenced the
+    task's ladder forever.
+    """
+    workspace = stuck_run(tmp_path, monkeypatch, wedged(asked=True))
+    first = items(workspace)[STUCK_SAMPLE]
+    ack(workspace, first.id)
+    assert STUCK_SAMPLE not in items(workspace)
+
+    other = LiveStuck(
+        count=1,
+        oldest_idle=7200.0,
+        samples=(
+            StuckSample(
+                sample_id="s2",
+                epoch=1,
+                idle=7200.0,
+                function="bash",
+                call_id="c9",
+                cancel_requested=True,
+            ),
+        ),
+        asked=True,
+    )
+    stuck_run(tmp_path, monkeypatch, other)
+    fresh = items(workspace)[STUCK_SAMPLE]
+
+    assert fresh.id != first.id
+    assert fresh.id.endswith(":asked")
+
+
+def test_a_call_less_episode_does_not_cover_a_later_spent_ask(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ask set keys every rung-2 ask by sample, not just the open rung-1 ones.
+
+    A call-less sample sits in the ask set forever, so a digest of the open
+    asks alone reads the same before and after a second sample climbs to
+    rung 2 beside it — and an ack of the quiet call-less item would then
+    cover an escalation it never saw.
+    """
+    silent = StuckSample(sample_id="s1", epoch=1, idle=7200.0)
+    alone = LiveStuck(count=1, oldest_idle=7200.0, samples=(silent,))
+    workspace = stuck_run(tmp_path, monkeypatch, alone)
+    first = items(workspace)[STUCK_SAMPLE]
+    ack(workspace, first.id)
+    assert STUCK_SAMPLE not in items(workspace)
+
+    joined = LiveStuck(
+        count=2,
+        oldest_idle=7200.0,
+        samples=(
+            silent,
+            StuckSample(
+                sample_id="s2",
+                epoch=1,
+                idle=3600.0,
+                function="bash",
+                call_id="c1",
+                cancel_requested=True,
+            ),
+        ),
+    )
+    stuck_run(tmp_path, monkeypatch, joined)
+    fresh = items(workspace)[STUCK_SAMPLE]
+
+    assert fresh.id != first.id
+
+
+def test_a_spent_sample_routes_the_whole_wedge_to_the_operator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a fresh sample beside a spent one must not lend it a second requeue: the
+    # item is per task, and a listing cannot mark one target spent
+    both = LiveStuck(
+        count=2,
+        oldest_idle=7200.0,
+        samples=(
+            StuckSample(
+                sample_id="s1",
+                epoch=1,
+                idle=7200.0,
+                function="bash",
+                call_id="c1",
+                cancel_requested=True,
+            ),
+            StuckSample(
+                sample_id="s2",
+                epoch=1,
+                idle=3600.0,
+                function="bash",
+                call_id="c2",
+                cancel_requested=True,
+            ),
+        ),
+        asked=True,
+    )
+    workspace = stuck_run(tmp_path, monkeypatch, both)
+    append_event(
+        workspace.journal,
+        NOTED,
+        by="agent",
+        text="stuck ladder rung 2: retried",
+        retried={"task": "T1", "sample": "s1", "epoch": 1},
+    )
+    item = items(workspace)[STUCK_SAMPLE]
+
+    assert item.owner is Owner.OPERATOR
+    assert item.id.endswith(":retried")
+    assert "already retried once" in item.summary
+
+
+def test_a_degraded_turn_withdraws_both_grants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a standing authority whose text cannot be read is not guessed from
+    # history: the file that will not parse routes every rung to a person
+    workspace = stuck_run(tmp_path, monkeypatch, wedged(asked=True))
+    assert items(workspace)[STUCK_SAMPLE].owner is Owner.AGENT
+
+    workspace.directives.write_text("stuck_action: [:\n", encoding="utf-8")
+    item = items(workspace)[STUCK_SAMPLE]
+
+    assert item.owner is Owner.OPERATOR
+    assert item.action == "inspect ctl sample cancel T1 s1 1"
 
 
 def test_two_calls_on_one_sample_stay_on_rung_one(

@@ -363,9 +363,10 @@ CANCEL: list[tuple[str, str, bool | list[str] | None]] = [
     ("any tool call", "stuck_cancel: true\n", True),
     ("nothing, said out loud", "stuck_cancel: false\n", False),
     ("named tools only", "stuck_cancel: [bash, python]\n", ["bash", "python"]),
-    # an empty list admits nothing, which is what unset already says
+    # an empty list admits nothing -- the spellable form of `false`
     ("an empty list", "stuck_cancel: []\n", None),
-    ("unset", "max_workers: 2\n", None),
+    # the grant is standing by default; `false` is what withdraws it
+    ("unset", "max_workers: 2\n", True),
 ]
 
 
@@ -378,6 +379,35 @@ def test_what_the_agent_may_cancel_parses(
     text: str, expected: bool | list[str] | None, tmp_path: Path
 ) -> None:
     assert read_directives(written(tmp_path, text)).stuck_cancel == expected
+
+
+ACTION: list[tuple[str, str, str | None]] = [
+    ("retry, said out loud", "stuck_action: retry\n", "retry"),
+    ("score", "stuck_action: score\n", "score"),
+    ("error", "stuck_action: error\n", "error"),
+    ("cancel", "stuck_action: cancel\n", "cancel"),
+    ("none", "stuck_action: none\n", "none"),
+    # every sibling grant's off-switch is `false`, so it means what they meant
+    ("false means none", "stuck_action: false\n", "none"),
+    # the grant is standing by default: a fresh attempt, once per sample
+    ("unset", "max_workers: 2\n", "retry"),
+]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [(text, expected) for _, text, expected in ACTION],
+    ids=[case for case, _, _ in ACTION],
+)
+def test_the_stuck_outcome_parses(
+    text: str, expected: str | None, tmp_path: Path
+) -> None:
+    assert read_directives(written(tmp_path, text)).stuck_action == expected
+
+
+def test_a_mistyped_stuck_outcome_is_refused_with_the_menu(tmp_path: Path) -> None:
+    with pytest.raises(DirectivesError, match="retry.*score.*error.*cancel.*none"):
+        read_directives(written(tmp_path, "stuck_action: requeue\n"))
 
 
 def test_a_cancel_entry_that_is_not_a_name_is_refused_by_position(

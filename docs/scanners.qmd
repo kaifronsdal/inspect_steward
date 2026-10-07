@@ -41,7 +41,7 @@ When the task's scan lands, the agent investigates each finding. The scanner ove
 
 Findings rooted in how the benchmark was built (a grader loophole, a tamperable grader, a scorer false positive) are kept scored as recorded. These faults recur on every run of the same dataset, so excluding or zeroing the samples would produce a number no other run has. Your agent rules them `score` itself after confirming the mechanism in the transcript. The finding is carried as a caveat in `anomalies.md`, written up in `analysis.md`. Findings that change no score (a refusal, a failed attempt to read the grader, a grader that could not grade its samples) are recorded the same way.
 
-What reaches for rulings are things that might be remedied by a re-run: a transient fault to run again, a successful sandbox escape or returned egress response to score zero, or genuine model misconduct. These arrive one row per class with a proposed disposition, your answers are recorded row by row, and the task's finished notification goes out with the proposals.
+What reaches you for rulings are things that might be remedied by a re-run: a transient fault to run again, a successful sandbox escape or returned egress response to score zero, or genuine model misconduct. These arrive one row per class with a proposed disposition, your answers are recorded row by row, and the task's finished notification goes out with the proposals.
 
 A run cannot be signed off while a finding has no ruling. At signoff Steward tells you how many findings were dismissed and how many were scored as recorded.
 

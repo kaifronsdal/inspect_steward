@@ -128,6 +128,7 @@ from .._workspace import (
     read_pause,
     read_raised,
     read_ramp_holds,
+    read_retried,
     read_signoff,
     read_undelivered,
     resolve_log_dir,
@@ -425,7 +426,13 @@ class TendResult:
     """Per task, what each errored sample's class has been ruled — the errored cell's split and the "Scores are over n of m" note (`_tend.rulings.dispositions`)."""
 
     stuck_cancel: bool | tuple[str, ...] | None = None
-    """Which stuck pending tool calls the agent may cancel, normalized — `True` for any, a tuple of function names, `None` for none. What routes a `stuck` item's owner."""
+    """Which stuck pending tool calls the agent may cancel, normalized — `True` for any, a tuple of function names, `None` for none (a withdrawn grant, or a degraded turn whose file could not be read). What routes a `stuck` item's owner at rung 1."""
+
+    stuck_action: str | None = None
+    """What the agent may do with a stuck sample once rung 1 is spent — `retry`, `score`, `error`, `cancel`, or nothing (`"none"`, or `None` where no authority could be read). What routes a `stuck` item's owner at rung 2 and the `--action` its command pre-fills."""
+
+    retried: frozenset[tuple[str, str, int]] = frozenset()
+    """The samples the agent has already cancelled-and-requeued under the standing `retry`, as `(task_id, sample_id, epoch)` from the journal's structured notes. A sample in this set gets no second standing retry — its next wedge is an operator's."""
 
     observed: ObservedTasks | None = None
     """The manifest read against the log directory, exactly as this turn read it.
@@ -706,6 +713,9 @@ class _History:
     raised: dict[str, Raised] = field(default_factory=dict[str, "Raised"])
     """Items the agent has handed to their owner, by id. Marked rather than removed — see `items.tend_items`."""
 
+    retried: frozenset[tuple[str, str, int]] = frozenset()
+    """Samples the standing stuck retry has been spent on, as `(task_id, sample_id, epoch)` (`read_retried`)."""
+
     collected: Collected | None = None
     """The most recent collection, or `None` where nobody has attached. What the collection age and the agent's delta are both computed from."""
 
@@ -847,6 +857,7 @@ def _history(workspace: Workspace) -> _History:
         complete=None if complete is None else complete - owed_complete,
         acknowledged=read_acks(events),
         raised=read_raised(events),
+        retried=read_retried(events),
         collected=read_collected(events),
         events=events,
         paused=read_pause(events),
@@ -1066,7 +1077,10 @@ class _Settings:
     """Seconds of sample silence before a `stuck` item, or `None` for `DEFAULT_STUCK_AFTER`. On a degraded turn, the last recorded value — the same last-known-good the pool falls back on."""
 
     stuck_cancel: bool | list[str] | None = None
-    """Which stuck tool calls the agent may cancel, as the file expressed it. `None` on a degraded turn whose file would not parse — a standing authority whose text cannot be read is not guessed from history."""
+    """Which stuck tool calls the agent may cancel, as the file expressed it (the field's own default is `true`). `None` on a degraded turn whose file would not parse — a standing authority whose text cannot be read is not guessed from history."""
+
+    stuck_action: str | None = None
+    """What the agent may do with a stuck sample once rung 1 is spent, as the file expressed it (the field's own default is `retry`). `None` on a degraded turn, for the same reason as `stuck_cancel`."""
 
     preauthorized: dict[str, str] | None = None
     """The rulings granted in advance, as patterns to dispositions. `None` on a degraded turn for the same reason as `stuck_cancel` — degrading must narrow authority, never preserve it."""
@@ -1350,6 +1364,8 @@ def _turn(
         anomaly_pending=pending,
         dispositions=folded,
         stuck_cancel=_cancel_authority(settings.stuck_cancel),
+        stuck_action=settings.stuck_action,
+        retried=history.retried,
         observed=observed,
         acknowledged=dict(history.acknowledged),
         current_logs=_current_locations(observed),
@@ -2025,7 +2041,7 @@ def _settings(
             # safe direction, since the decision it invites is publication
             log_store=resolve_log_store(directives) if directives is not None else None,
             # the reporting threshold degrades to the last known good like the
-            # pool; the two authorities degrade to *nothing* -- a standing
+            # pool; the three authorities degrade to *nothing* -- a standing
             # authorization whose text cannot be read must not be exercised
             stuck_after=(
                 stuck_after
@@ -2037,6 +2053,7 @@ def _settings(
                 )
             ),
             stuck_cancel=directives.stuck_cancel if directives is not None else None,
+            stuck_action=directives.stuck_action if directives is not None else None,
             preauthorized=(
                 _granted(preauthorized)
                 if preauthorized is not None
@@ -2104,6 +2121,7 @@ def _settings(
         log_store=resolve_log_store(directives),
         stuck_after=stuck_after if stuck_after is not None else directives.stuck_after,
         stuck_cancel=directives.stuck_cancel,
+        stuck_action=directives.stuck_action,
         preauthorized=(
             _granted(preauthorized)
             if preauthorized is not None

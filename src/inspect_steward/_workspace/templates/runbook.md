@@ -154,7 +154,7 @@ Everything you need is in the workspace. Nothing depends on a conversation you w
 | its transcript, event by event | `inspect ctl sample events TASK SAMPLE_ID` |
 | the worker's configuration in force | `inspect ctl config TASK` |
 
-Reads are yours. Mutations go as far as a pre-authorization and no further: `sample cancel-tool-call` when `stuck_cancel` admits it, and lowering a limit through `inspect ctl config` while containing an incident. `task pause`, `task cancel`, `sample cancel` and `sample requeue` are an operator's. Record every mutation with `steward note`. It leaves no other trace in the workspace.
+Reads are yours. Mutations go as far as a pre-authorization and no further: `sample cancel-tool-call` when `stuck_cancel` admits it, `sample cancel` with the outcome `stuck_action` names (and, for `retry`, the follow-on `sample requeue`, once per sample), and lowering a limit through `inspect ctl config` while containing an incident. `task pause`, `task cancel`, any other `sample cancel`, and any other `sample requeue` are an operator's. Record every mutation with `steward note`. It leaves no other trace in the workspace.
 
 ## Recording what was decided
 
@@ -197,7 +197,7 @@ Your verbs, in order:
 
 `rerun`, `exclude` and `zero` are carried out by the tend. Run nothing. A `rerun` requeues samples in a running task in place, and has a landed log's samples invalidated for relaunch; the window stays open until the re-run lands, and the same samples failing again come back as a question for the operator. An `exclude` is written into the log within a turn: the samples become unscored, with the reason, and the metrics are recomputed over the rest. A `zero` takes minutes, since what a zero is depends on the task's scorer: Steward starts the task on just those samples in a scratch directory, stops each as it begins, and writes the scorer's verdict on that empty attempt into the log; the transcript stays. Until a mark is written the report says so, and signoff waits. A class flagged as substrate (credentials, disk, storage) gets no rerun proposal from you; re-running into broken machinery burns the work twice.
 
-Two classes are quiet on purpose. A `task:` window heals itself when the respawn brings the task home; if it does not, `stalled` is the real question. A `limit:operator` window raises no item and waits for the signoff conversation — an operator's own kill and a **tool-call approval guard's** termination (`limit_reason` begins `Tool call approver requested termination`) alike. A guard termination is expected and inherently accepted, not a finding to raise: enumerate it in the by-task table and `anomalies.md`, accept it with the rest at signoff, and mid-run say nothing about it — do not investigate, assess, or recommend on it, even when the terminated action reads like an escape attempt. Only a **successful** escape the guard did not stop escalates, and its answer is `zero` (see *Judging a scan finding*).
+Two classes are quiet on purpose. A `task:` window heals itself when the respawn brings the task home; if it does not, `stalled` is the real question. A `limit:operator` window raises no item and waits for the signoff conversation — an operator's own kill, a **tool-call approval guard's** termination (`limit_reason` begins `Tool call approver requested termination`), and a sample you scored under `stuck_action` alike. A guard termination is expected and inherently accepted, not a finding to raise: enumerate it in the by-task table and `anomalies.md`, accept it with the rest at signoff, and mid-run say nothing about it — do not investigate, assess, or recommend on it, even when the terminated action reads like an escape attempt. Only a **successful** escape the guard did not stop escalates, and its answer is `zero` (see *Judging a scan finding*).
 
 ### Scan windows
 
@@ -233,7 +233,7 @@ A smoke that fails twice is a stop. Notify it explicitly: nothing posts before t
 |---|---|---|---|
 | `stalled` | operator | a task stopped progressing after its attempts and will not respawn | find out why, then raise |
 | `drift` | operator | the definition changed since it was captured | raise, or `launch` to adopt an intended change; never revert it to hide the drift |
-| `stuck` | operator, or you when pre-authorized | a sample has been quiet longer than `stuck_after` | see Stuck samples |
+| `stuck` | you under the standing grants (the default); operator where `_steward.yaml` withdrew or narrowed them, or after a spent retry | a sample has been quiet longer than `stuck_after` | see Stuck samples |
 | `parked` | operator | a worker is waiting on an operator inside a sample | raise and notify; never answer it |
 | `signoff_ready` | operator | every task finished and nothing is open | see Signoff |
 | `anomaly` | you while open; operator once proposed, or after a failed re-run | a class of failures or findings | see Anomalies |
@@ -258,13 +258,13 @@ A smoke that fails twice is a stop. Notify it explicitly: nothing posts before t
 
 A `stuck` item names samples alive but idle past `stuck_after`. Nothing failed and nothing is waiting on an operator; the task's clock keeps running. It is not an anomaly, and it clears itself when the sample moves.
 
-The remedy is a ladder, and the item carries the command for its rung:
+The remedy is a ladder, and the item carries the command for its rung. The first two rungs are yours by default; `_steward.yaml` withdraws them (`stuck_cancel: false`, `stuck_action: none`).
 
-1. Cancel the tool call: `inspect ctl sample cancel-tool-call ...`. The call fails inside the sample, which continues. Yours only when `stuck_cancel:` in `_steward.yaml` admits it; the item then arrives owned by you. Run the command it carries, then `steward ack ID --by agent --reason ...`.
-2. Cancel the sample. An operator's: it records an outcome in the eval's data.
-3. Requeue the sample. An operator's: it discards everything the sample did.
-
-Ask once. If the cancel was delivered and the call has not stopped, the item comes back with `:asked` in its id, owned by the operator. That means climb a rung; never repeat the ask.
+1. Cancel the tool call: `inspect ctl sample cancel-tool-call ...`. The call fails inside the sample, which continues. Yours when `stuck_cancel:` admits it (the default admits any tool). Run the command the item carries, `steward note` it, then `steward ack ID --by agent --reason ...`.
+2. Cancel the sample, with the outcome `stuck_action:` names. Ask once at rung 1: if the cancel was delivered and the call has not stopped, the item comes back with `:asked` in its id. That means climb; never repeat the ask. A sample stuck outside any tool call has no rung 1 and starts here.
+   - `retry` (the default): run the carried `sample cancel ... --action cancel`, confirm the sample reached terminal cancelled (`inspect ctl sample show`), then `inspect ctl sample requeue TASK SAMPLE_ID EPOCH`, then `steward note "stuck ladder rung 2: retried" --retried TASK SAMPLE_ID EPOCH` and `steward ack ID --by agent --reason ...`. The note is the guard: one retry per sample, and a sample that wedges again comes back owned by the operator.
+   - `score` / `error` / `cancel`: run the carried command, `steward note` it citing the ladder, `ack --by agent`. A scored sample becomes a quiet `limit:operator` window: say nothing mid-run, write the hang into `analysis.md` under the task, and have it ruled at signoff with a reason naming the ladder. A cancelled sample opens no window — the note and the `analysis.md` write-up are its whole record, so write both. `--action error` is refused for a `fails_on_error` sample; fall back to `score` and say so in the note.
+3. Requeue beyond the guarded retry. An operator's, always: it discards everything the sample did again.
 
 ### Tuning
 

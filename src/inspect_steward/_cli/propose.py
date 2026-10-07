@@ -203,12 +203,14 @@ def _cautioned(targets: list[str], decided: Disposition) -> None:
     if not flagged:
         return
     names = ", ".join(finding_label(key) for key in flagged)
+    # stderr, so `--json` consumers reading stdout still get one parseable blob
     click.echo(
         f"! {names} looks rooted in the benchmark's construction, and a fault the "
         f"corpus bakes in recurs in every run of it — {decided.value} invents a "
         f"number no other run has. The built-in answer is score --by agent with "
         f"the mechanism in the reason; put this to the operator only for a "
-        f"successful escape or misconduct the corpus does not explain"
+        f"successful escape or misconduct the corpus does not explain",
+        err=True,
     )
 
 

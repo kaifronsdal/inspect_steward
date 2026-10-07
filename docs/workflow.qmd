@@ -75,6 +75,7 @@ Note that you or an agent can call `steward tend` at any time to get the current
 After tend runs, agents call `steward collect`, which reports the open decisions along with everything that has happened since it last looked. The agent handles the following on its own:
 
 - Diagnoses errors and groups them into classes, and proposes what should be done about them (re-run, exclude, zero, score, accept, or dismiss) for you to rule on.
+- Handles stuck samples under the standing grants: cancels a hung tool call (`stuck_cancel`) and, if that does not free the sample, retries it once or records the configured outcome (`stuck_action`).
 - Oversees the concurrency ramp, holding the climb when something looks wrong and tuning a worker down while containing an incident.
 - Raises anything that needs you, and notifies you through the configured channel when it cannot proceed without an answer.
 - Writes up the overall run investigation in `analysis.md` once the run is complete.
@@ -85,7 +86,7 @@ There are some things within a run that require your judgement or the establishm
 
 - Rule on the error classes the agent proposes, choosing to re-run, exclude, zero, or re-score the samples, or to accept or dismiss the class outright.
 - Answer tool call approvals that have escalated to human review.
-- Decide what to do with a task that has stalled, or a sample stuck past the point the agent may act on it.
+- Decide what to do with a task that has stalled, a stuck sample that wedged again after its retry, or anything else the standing grants do not cover.
 - Sign off on the final results after reviewing anomalies and transcript analysis.
 
 ### Notifications {#notifications}
@@ -199,7 +200,8 @@ Standing decision rules. These are typically written by the agent during a run a
 | \_steward.yaml | Environment | Default | Description |
 |------------------|------------------|------------------|------------------|
 | `preauthorized` | `STEWARD_PREAUTHORIZED` | none | Anomaly-class patterns mapped to `rerun`, `exclude`, `zero` or `score`. |
-| `stuck_cancel` | `STEWARD_STUCK_CANCEL` | none | Stuck tool calls the agent may cancel unasked: `true` for any, or a list of tool names. |
+| `stuck_cancel` | `STEWARD_STUCK_CANCEL` | `true` | Stuck tool calls the agent may cancel unasked: `true` for any, a list of tool names, or `false` for none. |
+| `stuck_action` | `STEWARD_STUCK_ACTION` | `retry` | What the agent may do with a stuck sample the cancel did not free: `retry` (once per sample), `score`, `error`, `cancel`, or `none`. |
 | `policies` | `STEWARD_POLICIES` | none | Rules an agent applies, as prose or a list. |
 
 See [Codify](errors.qmd#codify) and [Stuck Samples](errors.qmd#stuck-samples) for additional details.
