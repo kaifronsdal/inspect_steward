@@ -12,6 +12,7 @@
 from typing import TYPE_CHECKING
 
 from .._anomaly.model import Anomalies, Anomaly, AnomalyState
+from .._evalset.classify import construction
 from .._evalset.cost import fleet_width, projection
 from .._evalset.observe import TaskState
 from .._schedule import Summary
@@ -20,6 +21,7 @@ from .._util.jsonl import utc_now
 from .anomalies_md import caveat_line, outcomes_block
 from .coverage import TaskCoverage
 from .items import (
+    CONSTRUCTION_NOTE,
     HEADINGS,
     Owner,
     Verdict,
@@ -682,6 +684,11 @@ def _window_line(anomaly: Anomaly, waiting: bool = False) -> str:
         line += f" (generation {anomaly.generation})"
     if anomaly.substrate:
         line += " — looks like the machinery under the run; verify storage before re-running"
+    if anomaly.state in (
+        AnomalyState.OPEN,
+        AnomalyState.INVESTIGATING,
+    ) and construction(anomaly.class_key):
+        line += f" — {CONSTRUCTION_NOTE}"
     return line
 
 

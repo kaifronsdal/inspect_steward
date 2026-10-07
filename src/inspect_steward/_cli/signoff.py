@@ -264,6 +264,8 @@ def _findings_line(result: Signoff) -> str | None:
 
     **A tally rather than a list, on purpose.** A dismissed finding is one nobody has to do anything about — that is what dismissing it decided — so naming each one at the moment of signing asks an operator to re-read an investigation whose conclusion was *there is nothing here*. What they need is the shape: how much was raised, and how much of it stood up. The reasons are in the journal and the reading is in `analysis.md` for anyone who wants to go back through it.
 
+    **Scored-as-recorded is its own count**, not folded into what stood: a construction fault whose mechanism was confirmed and whose number stands anyway is the one thing on this line the operator is signing over without having been asked about, so the tally says it exists and points at the reading.
+
     Returns:
         The line, or `None` where the scanners raised nothing at all — which needs no sentence.
     """
@@ -275,11 +277,18 @@ def _findings_line(result: Signoff) -> str | None:
         for one in windows
         if one.ruling is not None and one.ruling.disposition is Disposition.DISMISS
     )
+    scored = sum(
+        1
+        for one in windows
+        if one.ruling is not None and one.ruling.disposition is Disposition.SCORE
+    )
     raised = len(windows)
-    stood = raised - dismissed
+    stood = raised - dismissed - scored
     tail = (
         f"{dismissed} dismissed after investigation" if dismissed else "none dismissed"
     )
+    if scored:
+        tail += f", {scored} scored as recorded (the reading is in analysis.md)"
     if stood:
         tail += f", {stood} carried into the results"
     return f"scanners raised {raised} finding{'s' if raised != 1 else ''} — {tail}"

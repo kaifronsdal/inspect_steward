@@ -30,7 +30,7 @@ from .._anomaly.model import (
     Proposal,
     Ruling,
 )
-from .._evalset.classify import kind_of, scan_task, short_token
+from .._evalset.classify import construction, kind_of, scan_task, short_token
 from .._evalset.observe import ObservedTasks, TaskObservation, TaskState
 from .._schedule import InFlight, Summary, attempts_made
 from .._util.duration import format_age, format_duration, is_after, seconds_since
@@ -1363,14 +1363,33 @@ def self_healing(item: Item) -> bool:
     )
 
 
+CONSTRUCTION_NOTE = (
+    "the fault is the benchmark's construction — confirm the mechanism in the "
+    "transcript and whether it moved a score, then rule score --by agent with the "
+    "mechanism in the reason; only a successful escape (zero) or misconduct the "
+    "corpus does not explain goes to the operator"
+)
+"""The doctrine clause a construction-label scan window carries on the agent's surfaces.
+
+One constant shared by the item and the collect window line so the two cannot word it differently — the `anomaly_summary` argument, one level down. It rides only on agent surfaces: `anomaly_summary` itself feeds `anomalies.md` and `analysis.md`'s facts, where an instruction to the agent does not belong.
+"""
+
+
 def _window_items(anomaly: Anomaly, named: Mapping[str, str]) -> list[Item]:
     """One window's item, worded as the finding rather than as the window.
 
     The summary is the sentence an agent would say to an operator — the task, the samples, what they did — and the class key rides in the action, where a verb needs it. A summary that led with the key put the key in every message the agent then wrote (workflow.md §12.5).
+
+    **A construction-label window carries its own answer.** The dividing line for a scoring-integrity finding is whether the fault survives a re-run of the same corpus (`classify.CONSTRUCTION_LABELS`), and for one that does, the item says the posture inline and its action is the `rule` the agent records itself — `score --by agent` — rather than the `propose` template that would put a per-sample decision to the operator. The carve-outs travel as words in the clause, not as routing: `propose` still works where the evidence is an escape or misconduct.
     """
     base = _anomaly_id(anomaly)
     key = anomaly.class_key
     summary = anomaly_summary(anomaly, named)
+    if construction(key):
+        summary = f"{summary}; {CONSTRUCTION_NOTE}"
+        action = f"steward rule '{key}' --disposition score --by agent --reason ..."
+    else:
+        action = f"steward propose '{key}' --action ... --reason ..."
     if anomaly.state is AnomalyState.RULED:
         if anomaly.failed_resolutions:
             # the outcome *has* been observed, so the pending-outcome status
@@ -1410,7 +1429,7 @@ def _window_items(anomaly: Anomaly, named: Mapping[str, str]) -> list[Item]:
                 level=Level.INFO,
                 subject=key,
                 summary=f"{summary} — under investigation{note}",
-                action=f"steward propose '{key}' --action ... --reason ...",
+                action=action,
             )
         ]
     return [
@@ -1421,7 +1440,7 @@ def _window_items(anomaly: Anomaly, named: Mapping[str, str]) -> list[Item]:
             level=Level.ATTENTION,
             subject=key,
             summary=summary,
-            action=f"steward propose '{key}' --action ... --reason ...",
+            action=action,
         )
     ]
 
@@ -1630,6 +1649,7 @@ def _signoff(result: "TendResult") -> list[Item]:
                 summary,
                 len(decided),
                 _dismissed_findings(result.anomalies),
+                _scored_findings(result.anomalies),
                 result.log_store,
             ),
             # bare, like every other item action: a placeholder here would be
@@ -1641,7 +1661,7 @@ def _signoff(result: "TendResult") -> list[Item]:
 
 
 def _signoff_summary(
-    summary: Summary, accepted: int, dismissed: int, store: str | None
+    summary: Summary, accepted: int, dismissed: int, scored: int, store: str | None
 ) -> str:
     """What is true about the run, naming an accepted hole rather than papering over it.
 
@@ -1649,7 +1669,7 @@ def _signoff_summary(
 
     **Two clauses, not four.** *every task is complete (1 of 1) and nothing further will run, so the results are waiting to be accepted* said the same thing three ways: the parenthetical restates the sentence before it, *nothing further will run* is what *complete* means, and both sit directly above a table carrying the counts. This line is read on a phone at 3am and its job is to say a decision is owed.
 
-    **And a third clause where scan findings were dismissed**, which is the one thing on this line that is not about task counts. A dismissed finding leaves no caveat and reaches `anomalies.md` nowhere — correctly, since the whole content of the dismissal is *this does not change the numbers*. But *the model tried to read the grader and failed* is something the operator signing wants to have been told, and this is the sentence that reaches them at the moment they are asked (workflow.md §12.6.1). It says how many and points at the account; the reasons are in the journal and in `analysis.md`.
+    **And a third clause where scan findings were dismissed or scored as recorded**, which is the one thing on this line that is not about task counts. A dismissed finding leaves no caveat and reaches `anomalies.md` nowhere — correctly, since the whole content of the dismissal is *this does not change the numbers*. But *the model tried to read the grader and failed* is something the operator signing wants to have been told, and this is the sentence that reaches them at the moment they are asked (workflow.md §12.6.1). A scored finding is the stronger case: the mechanism was confirmed and the number stands anyway — the construction posture — so the operator is told it exists before their name goes on the results, with the caveat already in `anomalies.md` and the reading in `analysis.md`. The clause says how many and points at the account; the reasons are in the journal.
 
     **And a fourth where a store is configured, which is a second decision rather than a fact about the run.** Publication is the one act at the end of a run that nothing does by default and no setting can turn on: exporting results into a cache other projects read is an operator's call, taken once and out loud. So this line is the whole mechanism by which they are asked — an agent that is not told there is a store is an agent that signs off without mentioning it, and the run never tends again to say so afterwards.
 
@@ -1657,6 +1677,7 @@ def _signoff_summary(
         summary: The run's shape.
         accepted: Tasks settled by a decision rather than by finishing (`settled_by_decision`), which is a count the summary cannot supply on its own: an acknowledged stall settles a task and is recorded in the journal rather than in the reconciliation.
         dismissed: Scan findings looked at and dismissed (`_dismissed_findings`).
+        scored: Scan findings confirmed and scored as recorded (`_scored_findings`).
         store: The configured reuse store, or `None` where there is none and there is nothing to ask about.
     """
     complete = summary.states.get(TaskState.COMPLETE.value, 0)
@@ -1669,19 +1690,41 @@ def _signoff_summary(
             f"stand{'s' if accepted == 1 else ''}; "
             f"the results are waiting to be accepted"
         )
-    if dismissed:
-        one = dismissed == 1
-        line = (
-            f"{line} ({dismissed} scan finding{'' if one else 's'} "
-            f"{'was' if one else 'were'} looked at and dismissed — read the "
-            f"reason{'' if one else 's'} before you sign)"
-        )
+    if clause := _findings_clause(dismissed, scored):
+        line = f"{line} ({clause})"
     if store is None:
         return line
     return (
         f"{line}. A log store is configured at {store}: ask whether these "
         f"results should be published to it, and pass --publish if they should"
     )
+
+
+def _findings_clause(dismissed: int, scored: int) -> str:
+    """The parenthetical on the readiness line, one sentence whatever the mix.
+
+    A dismissal and a score-as-recorded are told differently because they claim different things: a dismissal says the scanner was wrong, a score says the mechanism was confirmed and the number stands anyway — and the second is the one an operator must not learn after signing.
+    """
+    first = dismissed or scored
+    plural = "" if first == 1 else "s"
+    was = "was" if first == 1 else "were"
+    if dismissed and scored:
+        return (
+            f"{dismissed} scan finding{plural} {was} looked at and dismissed, "
+            f"and {scored} confirmed and scored as recorded — read the reasons "
+            f"and analysis.md before you sign"
+        )
+    if scored:
+        return (
+            f"{scored} scan finding{plural} {was} confirmed and scored as "
+            f"recorded — the caveats and the reading are in analysis.md"
+        )
+    if dismissed:
+        return (
+            f"{dismissed} scan finding{plural} {was} looked at and dismissed — "
+            f"read the reason{plural} before you sign"
+        )
+    return ""
 
 
 def _dismissed_findings(anomalies: Anomalies) -> int:
@@ -1695,6 +1738,20 @@ def _dismissed_findings(anomalies: Anomalies) -> int:
         if anomaly.kind == "scan"
         and anomaly.ruling is not None
         and anomaly.ruling.disposition is Disposition.DISMISS
+    )
+
+
+def _scored_findings(anomalies: Anomalies) -> int:
+    """Instances of settled `scan:` windows a ruling kept scored as recorded.
+
+    The construction posture's output: a mechanism confirmed and a number that stands anyway, which is the one count an operator must not learn after signing. Counted from the fold like `_dismissed_findings`, for the same one-record reason.
+    """
+    return sum(
+        anomaly.evidence.count
+        for anomaly in anomalies.settled
+        if anomaly.kind == "scan"
+        and anomaly.ruling is not None
+        and anomaly.ruling.disposition is Disposition.SCORE
     )
 
 

@@ -1,6 +1,6 @@
 """A scan finding, from a worker's buffered row to the decision it becomes.
 
-Layer 1 like the rest of the item suite, and the whole point of step 30 is that this file is short: the rows are real (scout's own recorder wrote them), the fold is the tend's real fold, the window comes out of the real journal — and *nothing* between the class key and the signoff gate was written for scanning. What is asserted here is that the general machinery holds a finding as well as it holds an error, plus the two things that are genuinely new: the notification hold, and what the signer is told about dismissals.
+Layer 1 like the rest of the item suite, and the whole point of step 30 is that this file is short: the rows are real (scout's own recorder wrote them), the fold is the tend's real fold, the window comes out of the real journal — and *nothing* between the class key and the signoff gate was written for scanning. What is asserted here is that the general machinery holds a finding as well as it holds an error, plus the things that are genuinely new: the notification hold, the construction posture, and what the signer is told about dismissals and scores kept as recorded.
 """
 
 import json
@@ -26,6 +26,7 @@ from inspect_steward._tend import Level, Owner, Verdict, collect_markdown, turn_
 from inspect_steward._tend.coverage import Coverage, TaskCoverage
 from inspect_steward._tend.items import (
     ANOMALY,
+    CONSTRUCTION_NOTE,
     SIGNOFF_READY,
     UNREADABLE,
     Item,
@@ -261,7 +262,12 @@ def test_a_flagged_sample_is_the_agents_investigation(tmp_path: Path) -> None:
     assert item.summary.startswith("2 samples in probe")
     assert "flagged for reward hacking" in item.summary
     assert CLASS not in item.summary
-    assert item.action == f"steward propose '{CLASS}' --action ... --reason ..."
+    # a construction-label window carries its own answer: the doctrine clause
+    # on the summary, and the self-recordable rule in place of a proposal
+    assert CONSTRUCTION_NOTE in item.summary
+    assert item.action == (
+        f"steward rule '{CLASS}' --disposition score --by agent --reason ..."
+    )
     # an ack cannot close it — an anomaly closes on a ruling and nothing else
     assert not item.acknowledgeable
 
@@ -325,6 +331,76 @@ def test_the_signer_is_told_what_was_dismissed(tmp_path: Path) -> None:
     ready = [item for item in turn(workspace).items if item.kind == SIGNOFF_READY]
 
     assert "2 scan findings were looked at and dismissed" in ready[0].summary
+
+
+def test_the_signer_is_told_what_was_scored_as_recorded(tmp_path: Path) -> None:
+    # the construction posture's output: the mechanism was confirmed and the
+    # number stands anyway, which the operator is told before their name goes
+    # on the results
+    workspace = scanning(tmp_path)
+    turn(workspace)
+    rule(workspace, "score", by="agent")
+
+    result = turn(workspace)
+
+    ready = [item for item in result.items if item.kind == SIGNOFF_READY]
+    assert "2 scan findings were confirmed and scored as recorded" in ready[0].summary
+    assert "analysis.md" in ready[0].summary
+    assert result.verdict is Verdict.COMPLETE
+
+
+def test_a_scored_finding_signs_and_is_named_in_the_signature(tmp_path: Path) -> None:
+    # score settles the window as accepted, so the caveat and the signature's
+    # named exception come for free -- pinned here because the construction
+    # posture leans on both
+    from inspect_steward._signoff import Signoff, signoff
+
+    workspace = scanning(tmp_path)
+    turn(workspace)
+    rule(workspace, "score", by="agent")
+
+    result = signoff(workspace, by="kaia")
+
+    assert isinstance(result, Signoff)
+    assert result.blockers == []
+    assert result.signature is not None
+    assert CLASS in result.signature.exceptions
+
+
+def test_the_signoff_echo_tallies_the_scored_findings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_workspace(tmp_path, git=False)
+    workspace = scanning(tmp_path)
+    turn(workspace)
+    rule(workspace, "score", by="agent")
+    monkeypatch.chdir(workspace.root)
+
+    signed = CliRunner().invoke(steward, ["signoff", "--by", "kaia"])
+
+    assert signed.exit_code == 0, signed.output
+    assert "1 scored as recorded (the reading is in analysis.md)" in signed.output
+
+
+def test_a_refusal_window_still_proposes_to_the_operator(tmp_path: Path) -> None:
+    # the doctrine is scoped to the construction labels: a refusal window keeps
+    # the ordinary proposal path and carries no inline posture
+    workspace = scanning(tmp_path, label="refusal")
+
+    (item,) = anomaly_items(workspace)
+
+    refusal = scan_class(SCANNER, "refusal", task=TASK.name, identifier=TASK.identifier)
+    assert item.subject == refusal
+    assert item.action == f"steward propose '{refusal}' --action ... --reason ..."
+    assert CONSTRUCTION_NOTE not in item.summary
+
+
+def test_the_collect_page_says_the_posture_on_the_open_window(tmp_path: Path) -> None:
+    workspace = scanning(tmp_path)
+
+    result = turn(workspace)
+
+    assert CONSTRUCTION_NOTE in collect_markdown(result)
 
 
 @pytest.mark.parametrize(
@@ -784,7 +860,9 @@ class TestWaitingToLand:
 
         (item,) = [item for item in result.items if item.subject == CLASS]
         assert item.owner is Owner.AGENT
-        assert item.action == f"steward propose '{CLASS}' --action ... --reason ..."
+        assert item.action == (
+            f"steward rule '{CLASS}' --disposition score --by agent --reason ..."
+        )
         assert "waiting for the task to land" not in collect_markdown(result)
 
 

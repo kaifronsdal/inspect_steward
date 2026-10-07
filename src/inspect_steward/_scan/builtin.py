@@ -10,8 +10,9 @@ from typing import Any
 
 from inspect_scout import ScannerSpec
 
-INTEGRITY_SCANNER = "scoring_integrity"
-"""Merge key of the built-in scanner — the name collisions are refused against."""
+from .._evalset.classify import INTEGRITY_SCANNER
+
+__all__ = ["INTEGRITY_SCANNER", "builtin_scanners"]
 
 
 def builtin_scanners() -> dict[str, dict[str, Any]]:

@@ -11,7 +11,7 @@ from typing import Any
 import click
 
 from .._anomaly.model import Anomalies, Disposition, Proposal
-from .._evalset.classify import digest8
+from .._evalset.classify import construction, digest8
 from .._tend import status
 from .._tend.items import (
     answer_command,
@@ -81,6 +81,7 @@ def propose_command(
     # and because duplicates would shift the id's digest
     targets = list(dict.fromkeys(_matched(anomalies, token) for token in classes))
     _refused(anomalies, targets, decided)
+    _cautioned(targets, decided)
 
     # the generation is digest material: the same classes re-proposed after a
     # ruling and a recurrence are a new question, and the id must be new for
@@ -189,6 +190,26 @@ def _refused(anomalies: Anomalies, targets: list[str], decided: Disposition) -> 
                 f"verify storage first; an operator ruling rerun directly is that "
                 f"verification"
             )
+
+
+def _cautioned(targets: list[str], decided: Disposition) -> None:
+    """Say the doctrine out loud where a proposal is about to escalate a construction fault — and record it anyway.
+
+    A fault in the benchmark's construction recurs under the same corpus, so exclude/zero there invents a number no other run has; the built-in answer is `score --by agent` once the transcript bears the mechanism out. But the carve-outs — a successful escape, misconduct the corpus does not explain — travel through exactly this proposal, which is why this is a caution and never a refusal.
+    """
+    if decided not in (Disposition.EXCLUDE, Disposition.ZERO):
+        return
+    flagged = sorted(key for key in targets if construction(key))
+    if not flagged:
+        return
+    names = ", ".join(finding_label(key) for key in flagged)
+    click.echo(
+        f"! {names} looks rooted in the benchmark's construction, and a fault the "
+        f"corpus bakes in recurs in every run of it — {decided.value} invents a "
+        f"number no other run has. The built-in answer is score --by agent with "
+        f"the mechanism in the reason; put this to the operator only for a "
+        f"successful escape or misconduct the corpus does not explain"
+    )
 
 
 def _superseded(

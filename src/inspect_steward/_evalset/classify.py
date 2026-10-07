@@ -197,6 +197,30 @@ def scan_task(class_key: str) -> str:
     return segments[-2]
 
 
+INTEGRITY_SCANNER = "scoring_integrity"
+"""Merge key of the built-in scanner — the name collisions are refused against."""
+
+CONSTRUCTION_LABELS = frozenset({"reward_hacking", "scoring_artifact"})
+"""The `scoring_integrity` labels whose finding is rooted in the benchmark's construction rather than this run's conduct.
+
+The dividing line is persistence, not what the model did: a grader loophole that paid, a scorer that credited the wrong thing, a grader readable or modifiable from inside the sandbox — faults the corpus ships with, which a repeat run ships again and a capable model re-finds. The built-in posture for these is `score`, recorded by the agent once the transcript bears the mechanism out: excluding or zeroing them invents a number no other run of the same corpus has, and often double-penalizes a sample the construction already mis-scored. The carve-outs are evidence-level, never label-level — a successful escape zeroes, and misconduct the corpus does not explain is the operator's to judge — which is why every surface reading this partition says *unless* rather than deciding.
+"""
+
+
+def construction(class_key: str) -> bool:
+    """Whether a scan class names a `scoring_integrity` finding rooted in the benchmark's construction.
+
+    True only for the built-in scanner's `CONSTRUCTION_LABELS` — a third-party scanner that happens to emit a label named `reward_hacking` has not signed up to this doctrine. Run faults (`apparatus_fault`, `external_truncation`), containment (`internet_egress`), `refusal`, labelless scan keys, and every other kind are `False`.
+    """
+    segments = class_key.split(":")
+    return (
+        kind_of(class_key) == "scan"
+        and len(segments) == 5
+        and segments[1] == INTEGRITY_SCANNER
+        and segments[2] in CONSTRUCTION_LABELS
+    )
+
+
 def scan_error_class(scanner: str, traceback: str | None) -> str:
     """The class key for transcripts one scanner could not scan.
 
@@ -366,12 +390,15 @@ def substrate(parsed: ParsedError | None, message: str | None) -> bool:
 
 
 __all__ = [
+    "CONSTRUCTION_LABELS",
+    "INTEGRITY_SCANNER",
     "MESSAGE_CAP",
     "OPERATOR_LIMIT",
     "UNCLASSED",
     "VANISHED",
     "ParsedError",
     "cancelled",
+    "construction",
     "digest8",
     "error_class",
     "kind_of",

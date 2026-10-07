@@ -1,5 +1,7 @@
 ## Unreleased
 
+- Built-in posture for construction-rooted scoring-integrity findings: a `reward_hacking` or `scoring_artifact` finding from the built-in scanner is the agent's to confirm and rule `score --by agent` — the fault ships with the corpus and recurs on every run, so excluding or zeroing invents a number no other run has. The window's item and collect line now carry the doctrine and the self-recordable `rule` command in place of a proposal; `steward propose --action exclude|zero` on such a class cautions (and still records, since the carve-outs — a successful escape, misconduct the corpus does not explain — travel that path); the signoff readiness line and the signature echo tally findings scored as recorded separately, pointing at `analysis.md`.
+
 - systemd timer: set `KillMode=process` on the tend service. Under the default `control-group`, systemd killed every process left in the unit's cgroup when the oneshot tend exited, so a worker a scheduled tend started was killed seconds later (`start_new_session` does not leave the cgroup). Re-arm the timer (`steward timer arm`) to pick up the new unit; a hand-written `killmode.conf` drop-in is no longer needed.
 
 - Reasoning-on-the-wire smoke: count Google's `thoughtSignature` marker, the camelCase key the genai SDK serializes on the wire, alongside the snake_case `thought_signature`. Without it a Google request that plainly carried a replayed reasoning block counted zero markers, and the check read a real replay as a dropped block — a false failure rather than a signature defect upstream.

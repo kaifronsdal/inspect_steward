@@ -12,8 +12,15 @@ under another model scored 1.0 on the same grader at 171/171, while the flagged
 run failed five named tests.
 """
 
+from typing import get_args
+
 from inspect_scout import Transcript
-from inspect_steward._scan.integrity import EXPLANATION_CHARS, integrity_question
+from inspect_steward._evalset.classify import CONSTRUCTION_LABELS
+from inspect_steward._scan.integrity import (
+    EXPLANATION_CHARS,
+    IntegrityLabel,
+    integrity_question,
+)
 
 GRADER = (
     "Test exit code: 1 stdout: Running gold tests -- test/audio/VoiceRecording-test.ts "
@@ -104,3 +111,14 @@ def test_an_ordinary_explanation_is_still_quoted_whole() -> None:
 
     assert "verbatim" in question
     assert "elided" not in question
+
+
+def test_every_label_has_a_construction_bucket_decided() -> None:
+    # adding a label to the scanner forces a decision about which side of the
+    # persistence line it falls on; this is where the omission surfaces
+    assert set(get_args(IntegrityLabel)) == CONSTRUCTION_LABELS | {
+        "refusal",
+        "apparatus_fault",
+        "external_truncation",
+        "internet_egress",
+    }

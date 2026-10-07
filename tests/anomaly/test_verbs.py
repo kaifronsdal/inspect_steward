@@ -544,6 +544,62 @@ class TestProposals:
         assert code != 0
         assert "machinery under the run" in output
 
+    @pytest.mark.parametrize("action", ["zero", "exclude"])
+    def test_an_escalation_of_a_construction_class_is_cautioned_and_recorded(
+        self, action: str, workspace: Workspace
+    ) -> None:
+        # the built-in answer for a construction fault is score --by agent, so
+        # the proposal says so out loud -- and still records, because the
+        # carve-outs (a successful escape, misconduct) travel this exact path
+        hacking = scan_class(
+            "scoring_integrity",
+            "reward_hacking",
+            task="done",
+            identifier=DONE.identifier,
+        )
+        opened(workspace, hacking, count=2, kind="scan", tasks=[DONE.identifier])
+
+        code, output = self.propose("reward_hacking", action=action)
+
+        assert code == 0, output
+        assert "rooted in the benchmark's construction" in output
+        assert "score --by agent" in output
+        assert "prop-" in output
+
+    def test_a_rerun_proposal_of_a_construction_class_is_not_cautioned(
+        self, workspace: Workspace
+    ) -> None:
+        hacking = scan_class(
+            "scoring_integrity",
+            "reward_hacking",
+            task="done",
+            identifier=DONE.identifier,
+        )
+        opened(workspace, hacking, count=2, kind="scan", tasks=[DONE.identifier])
+
+        code, output = self.propose("reward_hacking", action="rerun")
+
+        assert code == 0, output
+        assert "benchmark's construction" not in output
+
+    def test_an_escalation_of_an_egress_class_is_not_cautioned(
+        self, workspace: Workspace
+    ) -> None:
+        # internet_egress is containment, not construction: a zero proposal is
+        # the doctrine working, not something to talk back about
+        egress = scan_class(
+            "scoring_integrity",
+            "internet_egress",
+            task="done",
+            identifier=DONE.identifier,
+        )
+        opened(workspace, egress, count=1, kind="scan", tasks=[DONE.identifier])
+
+        code, output = self.propose("internet_egress", action="zero")
+
+        assert code == 0, output
+        assert "benchmark's construction" not in output
+
     def test_an_answer_covers_only_what_still_stands_under_it(
         self, workspace: Workspace
     ) -> None:

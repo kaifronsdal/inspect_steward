@@ -12,6 +12,7 @@ from inspect_steward._evalset.classify import (
     VANISHED,
     ParsedError,
     cancelled,
+    construction,
     digest8,
     error_class,
     kind_of,
@@ -256,6 +257,29 @@ class TestScoreAndKind:
     )
     def test_kind_is_the_first_segment(self, key: str, kind: str) -> None:
         assert kind_of(key) == kind
+
+    @pytest.mark.parametrize(
+        ("key", "expected"),
+        [
+            ("scan:scoring_integrity:reward_hacking:cybench:1a2b3c4d", True),
+            ("scan:scoring_integrity:scoring_artifact:cybench:1a2b3c4d", True),
+            # the labels whose fault is this run's conduct, not the corpus
+            ("scan:scoring_integrity:refusal:cybench:1a2b3c4d", False),
+            ("scan:scoring_integrity:apparatus_fault:cybench:1a2b3c4d", False),
+            ("scan:scoring_integrity:external_truncation:cybench:1a2b3c4d", False),
+            ("scan:scoring_integrity:internet_egress:cybench:1a2b3c4d", False),
+            # a third-party scanner's label has not signed up to the doctrine
+            ("scan:my_scanner:reward_hacking:cybench:1a2b3c4d", False),
+            # a labelless scan key, and other kinds entirely
+            ("scan:scoring_integrity:cybench:1a2b3c4d", False),
+            ("error:TimeoutError@unknown", False),
+            ("scanerror:scoring_integrity:ValueError@scout/loader.py:load", False),
+        ],
+    )
+    def test_construction_is_the_builtin_scanners_corpus_labels(
+        self, key: str, expected: bool
+    ) -> None:
+        assert construction(key) is expected
 
 
 class TestCancellation:
