@@ -1,3 +1,7 @@
+## Unreleased
+
+- `integrity_scanner: false` (or `STEWARD_INTEGRITY_SCANNER=false`) turns off the built-in `scoring_integrity` scanner. The definition's own scanners and the `scanners` key are unaffected; with nothing left to scan, the launch lays down no scan directory and the smoke reports `scan_coverage` as unexercised. Turning it off over rows the built-in already recorded is refused at launch, like any removed scanner.
+
 ## 0.2.9 (07 September 2026)
 
 - **Default change: stuck samples are now handled by the agent.** The agent may cancel a stuck tool call without asking (`stuck_cancel`, now default `true`) and, if the sample is still stuck, cancel and requeue it for one fresh attempt (`stuck_action`, new, default `retry`). A sample that wedges again after its retry goes to the operator. Set `stuck_action` to `score`, `error`, or `cancel` for a different standing outcome, or opt out with `stuck_cancel: false` and `stuck_action: none` (or the `STEWARD_*` variables). Requeuing beyond the single guarded retry remains operator-only, and Steward itself still never cancels anything: the grants decide the item's owner and pre-fill the command, and the agent executes and journals.
