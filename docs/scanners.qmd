@@ -33,7 +33,7 @@ eval_set(
 )
 ```
 
-## Turning Off the Built-In Scanner
+## Disabling the Scanner
 
 To run without the built-in scanner, set `integrity_scanner` in `_steward.yaml` or `STEWARD_INTEGRITY_SCANNER` in your `.env`:
 
