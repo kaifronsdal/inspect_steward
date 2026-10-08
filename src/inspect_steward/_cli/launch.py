@@ -79,9 +79,9 @@ _LABELS = {
     multiple=True,
     metavar="KEY=VALUE",
     help=(
-        "Argument for the definition (flow spec function args only). Can be "
-        "specified multiple times. Defaults to the committed manifest's on a "
-        "re-launch."
+        "Argument for the definition: a flow spec function argument, or an "
+        "eval_set() script's --KEY=VALUE option. Can be specified multiple "
+        "times. Defaults to the committed manifest's on a re-launch."
     ),
 )
 @click.option(

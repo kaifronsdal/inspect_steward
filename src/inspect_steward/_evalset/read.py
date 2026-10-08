@@ -72,7 +72,7 @@ def read_eval_set(
 
     Args:
         definition: Path to the definition file (an `eval_set()` script, an Inspect Flow spec, or a Hawk eval set config).
-        args: Arguments for the definition (flow spec function args only).
+        args: Arguments for the definition (a flow spec's function arguments, or a script's own `--key=value` options; see `definition_command`).
         type: Explicit definition type (auto-detected by default).
         cwd: Working directory for executing the definition (defaults to the current working directory, matching how the definition would run by hand).
         env: Additional environment variables for the definition process.

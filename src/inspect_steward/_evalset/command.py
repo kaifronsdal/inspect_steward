@@ -40,7 +40,7 @@ def definition_command(
     Args:
         path: Path to the definition file.
         type: Definition type.
-        args: Arguments for the definition (flow spec function args only).
+        args: Arguments for the definition: a flow spec's function arguments, or an `eval_set()` script's own `--key=value` options (`_script_options`). Nobody runs a script by hand under Steward — it runs once to capture and again in every worker — so this is how one is parameterized in a way that is recorded with the run (`ManifestSource.args`) and identical in every process. A Hawk config takes none.
         cwd: Working directory for the command (defaults to the current working directory, matching how the definition would run by hand).
         log_dir: Scratch directory for the definition's pre-boundary work (flow definitions only; other definition types carry their own log directory). Always a scratch directory, never the run's: a frontend writes artifacts and scans for prior logs *before* `eval_set()` is reached, where a selection's `log_dir` override cannot yet apply, and that work is once-per-run rather than once-per-worker. The run's log directory reaches the eval through the selection.
 
@@ -48,17 +48,20 @@ def definition_command(
         Command to execute the definition.
 
     Raises:
-        ValueError: If `args` are passed for a non-flow definition, or the package required to run the definition type is not installed.
+        ValueError: If `args` are passed for a hawk definition, or the package required to run the definition type is not installed.
     """
-    if args and type != "flow":
+    if args and type == "hawk":
         raise ValueError(
-            f"Definition args are only supported for flow definitions (got type '{type}')."
+            "Definition args are not supported for hawk definitions: a Hawk eval "
+            "set config is YAML and has no arguments to receive."
         )
 
     abs_path = str(path.resolve())
     env: dict[str, str] = {}
     if type == "evalset":
-        argv = [sys.executable, abs_path]
+        # the script's own options, so `python evalset.py --shard=0/3` is this
+        # command run by hand and the script parses them with plain argparse
+        argv = [sys.executable, abs_path, *_script_options(args)]
     elif type == "flow":
         _require_package("inspect_flow", "flow")
         # flow's own CLI is a conforming program: it culminates in the
@@ -168,6 +171,32 @@ def _arg_options(args: dict[str, Any] | None) -> list[str]:
         encoded = encoded.removesuffix("\n...").strip()
         options += ["-A", f"{key}={encoded}"]
     return options
+
+
+def _script_options(args: dict[str, Any] | None) -> list[str]:
+    """Render definition args as a script's own `--key=value` options, which it reads with ordinary argparse.
+
+    The key goes back to argparse's dashed spelling (`-A max-tasks=4` was recorded as `max_tasks`). The value is the text an operator would type: a string as is, a boolean as `true`/`false`, a number as written, a list comma-joined the way `-A` read it. Rendering from the recorded value rather than the raw flag is what keeps capture and every worker on identical text — the manifest's JSON round trip turns a YAML date into its string, and both render the same. One `--key=value` token per argument, so a value beginning with `-` cannot be read as an option.
+
+    Raises:
+        ValueError: A value is a mapping, which has no option text.
+    """
+    return [
+        f"--{key.replace('_', '-')}={_option_text(key, value)}"
+        for key, value in (args or {}).items()
+    ]
+
+
+def _option_text(key: str, value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, list):
+        return ",".join(_option_text(key, item) for item in cast(list[Any], value))
+    if isinstance(value, dict):
+        raise ValueError(
+            f"Definition arg '{key}' is a mapping; a script's options take text."
+        )
+    return "" if value is None else str(value)
 
 
 def _require_package(package: str, extra: str) -> None:

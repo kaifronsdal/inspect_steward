@@ -43,16 +43,11 @@ def test_cliparse_args(arg: str, expected: dict[str, Any]) -> None:
     assert parse_args((arg,)) == expected
 
 
-def test_cli_tasks_flow_args() -> None:
+@pytest.mark.parametrize("fixture", ["flow_args_spec.py", "args_evalset.py"])
+def test_cli_tasks_args(fixture: str) -> None:
     result = CliRunner().invoke(
         steward,
-        [
-            "tasks",
-            str(FIXTURES / "flow_args_spec.py"),
-            "-A",
-            "difficulty=hard",
-            "--json",
-        ],
+        ["tasks", str(FIXTURES / fixture), "-A", "difficulty=hard", "--json"],
     )
     assert result.exit_code == 0, result.output
     manifest = Manifest.model_validate_json(result.output)
@@ -60,13 +55,13 @@ def test_cli_tasks_flow_args() -> None:
     assert manifest.tasks[0].args == {"difficulty": "hard"}
 
 
-def test_cli_tasks_args_require_flow() -> None:
+def test_cli_tasks_args_refused_for_hawk() -> None:
     result = CliRunner().invoke(
         steward,
-        ["tasks", str(FIXTURES / "simple_evalset.py"), "-A", "level=2"],
+        ["tasks", str(FIXTURES / "hawk_config.yaml"), "-A", "level=2"],
     )
     assert result.exit_code != 0
-    assert "only supported for flow" in result.output
+    assert "not supported for hawk" in result.output
 
 
 def test_cli_tasks_definition_error() -> None:

@@ -371,6 +371,20 @@ def test_a_fleet_shares_one_log_directory(tmp_path: Path) -> None:
     assert sorted(landed(tmp_path / "logs")) == identifiers
 
 
+def test_a_script_worker_runs_under_the_args_its_capture_saw(tmp_path: Path) -> None:
+    # the argument is part of the task's identity, so a worker that ran the
+    # script without it would build a task the selection does not name, and
+    # die rather than land a log
+    definition = FIXTURES / "args_evalset.py"
+    manifest = read_eval_set(definition, args={"difficulty": "hard"}, cwd=tmp_path)
+    workers = spawn_all(
+        manifest, fleet(definition, tmp_path, args=manifest.source.args)
+    )
+    wait(workers)
+
+    assert landed(tmp_path / "logs") == [manifest.tasks[0].identifier]
+
+
 def test_a_resumed_worker_lands_a_second_log(tmp_path: Path) -> None:
     definition = FIXTURES / "simple_evalset.py"
     manifest = read_eval_set(definition, cwd=tmp_path)
