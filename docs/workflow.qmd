@@ -237,6 +237,34 @@ along with `_steward.yaml` for the project's standing rules. Reading consumes no
 
 While nothing is attached the run keeps converging, but anomalies accumulate without proposals and items sit unraised. If no agent has collected in the last two tends, Steward routes the agent's items to you as well.
 
+### Definition Arguments
+
+`steward launch -A KEY=VALUE` passes an argument to the eval set definition. A [Flow](flow.qmd) spec receives it as a spec function argument. A script receives it as its own `--key=value` option, both when Steward reads the definition at launch and in every worker it starts. This is how to parameterize a definition that Steward runs on your behalf, for example one definition shared by several workspaces that each run a different shard of it:
+
+``` {.bash filename="Terminal"}
+steward launch evalset.py -A shard=0/3
+```
+
+The script reads it with ordinary `argparse`:
+
+``` {.python filename="evalset.py"}
+import argparse
+
+from inspect_ai import eval_set
+from inspect_harbor import cais_swebenchpro, datacurve_deep_swe
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--shard", default="0/1")
+index, count = (int(part) for part in parser.parse_args().shard.split("/"))
+
+tasks = [cais_swebenchpro(), datacurve_deep_swe()]
+eval_set(tasks=tasks[index::count], model="openai/gpt-5.6-sol")
+```
+
+Running the script by hand with the same options (`python evalset.py --shard=0/3`) runs what Steward runs. A key's underscores become dashes (`-A max_tasks=4` arrives as `--max-tasks=4`), booleans arrive as `true` or `false`, and a comma-separated value arrives as typed, so declare each option with the `type` you want rather than as a flag. A script that ignores its command line ignores `-A` too, so the argument is recorded but has no effect. Hawk configs take no arguments.
+
+Arguments are recorded in the run's manifest, and a later `steward launch` without `-A` reuses them, so relaunching to pick up an edit cannot quietly capture a different eval set. Passing any `-A` replaces the whole set, and `--no-args` launches with none.
+
 ### Inflight Changes
 
 There is no amend command. To change an eval set that is already running, edit the definition and launch again. Steward compares the new definition against the one it committed and runs only what is new or changed; a task whose identifier survives the edit already has its log and is not re-run.

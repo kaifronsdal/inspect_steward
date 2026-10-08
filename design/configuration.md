@@ -117,7 +117,7 @@ The manifest is an **index into the definition, not a reconstruction of it**. Th
     "type": "evalset",            // evalset | flow
     "path": "evalset.py",
     "content_hash": "sha256:…",   // staleness detection
-    "args": {}                    // e.g. flow --arg values
+    "args": {}                    // -A values: flow spec args, or a script's argv
   },
   "options": {                    // serializable eval_set kwargs, informational
     "log_dir": "s3://…/logs",

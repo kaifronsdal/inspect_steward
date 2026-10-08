@@ -7,6 +7,7 @@ Not named `test_*`, so pytest does not collect it.
 """
 
 from pathlib import Path
+from typing import Any
 
 from inspect_ai._eval.evalset import task_identifier
 from inspect_ai.log import list_eval_logs, read_eval_log
@@ -36,6 +37,7 @@ def fleet(
     *,
     type: DefinitionType = "evalset",
     cwd: Path | None = None,
+    args: dict[str, Any] | None = None,
 ) -> Fleet:
     """A fleet for one definition, with the eval set id resolved as a run would."""
     log_dir = workspace / "logs"
@@ -47,6 +49,7 @@ def fleet(
         workers_dir=workspace / ".steward" / "workers",
         inflight=workspace / ".steward" / "inflight.jsonl",
         cwd=cwd or workspace,
+        args=args,
     )
 
 

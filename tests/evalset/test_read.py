@@ -172,14 +172,18 @@ def test_read_eval_set_hawk(tmp_path: Path) -> None:
     assert resolve_samples_ramp(manifest, Pool()) is None
 
 
-def test_read_eval_set_flow_args(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("fixture", "name"),
+    [("flow_args_spec.py", "tasks.py@sweep"), ("args_evalset.py", "sweep")],
+)
+def test_read_eval_set_args(fixture: str, name: str, tmp_path: Path) -> None:
     manifest = read_eval_set(
-        FIXTURES / "flow_args_spec.py", args={"difficulty": "hard"}, cwd=tmp_path
+        FIXTURES / fixture, args={"difficulty": "hard"}, cwd=tmp_path
     )
 
     assert manifest.source.args == {"difficulty": "hard"}
     task = manifest.tasks[0]
-    assert task.name == "tasks.py@sweep"
+    assert task.name == name
     assert task.args == {"difficulty": "hard"}
 
 
