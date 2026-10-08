@@ -126,7 +126,7 @@ class Fleet:
     """Working directory for workers (defaults to the current directory, matching how the definition would run by hand)."""
 
     args: dict[str, Any] | None = None
-    """Arguments for the definition (flow spec function args only)."""
+    """Arguments for the definition, as the manifest recorded them (see `definition_command`)."""
 
     overrides: EvalSetOverrides | None = None
     """Inspect's own eval-set arguments for this run, as the committed manifest records them.

@@ -1,6 +1,7 @@
 import os
 import sys
 import warnings
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -88,12 +89,34 @@ def test_command_flow_args(args: dict[str, object], expected: list[str]) -> None
 
 
 @pytest.mark.parametrize(
-    ("fixture", "type"),
-    [("simple_evalset.py", "evalset"), ("hawk_config.yaml", "hawk")],
+    ("args", "expected"),
+    [
+        ({"shard": "0/3"}, ["--shard=0/3"]),
+        ({"max_tasks": 4}, ["--max-tasks=4"]),
+        ({"ratio": 0.5}, ["--ratio=0.5"]),
+        ({"flag": True}, ["--flag=true"]),
+        ({"items": ["a", "b"]}, ["--items=a,b"]),
+        ({"offset": -1}, ["--offset=-1"]),
+        ({"start": date(2026, 1, 1)}, ["--start=2026-01-01"]),
+        ({"start": "2026-01-01"}, ["--start=2026-01-01"]),
+        ({"a": 1, "b": "x"}, ["--a=1", "--b=x"]),
+    ],
 )
-def test_command_args_require_flow(fixture: str, type: DefinitionType) -> None:
-    with pytest.raises(ValueError, match="only supported for flow"):
-        definition_command(FIXTURES / fixture, type, args={"x": 1})
+def test_command_script_args(args: dict[str, object], expected: list[str]) -> None:
+    command = definition_command(FIXTURES / "simple_evalset.py", "evalset", args=args)
+    assert command.argv[2:] == expected
+
+
+def test_command_script_args_refuse_a_mapping() -> None:
+    with pytest.raises(ValueError, match="mapping"):
+        definition_command(
+            FIXTURES / "simple_evalset.py", "evalset", args={"m": {"a": 1}}
+        )
+
+
+def test_command_args_refused_for_hawk() -> None:
+    with pytest.raises(ValueError, match="not supported for hawk"):
+        definition_command(FIXTURES / "hawk_config.yaml", "hawk", args={"x": 1})
 
 
 @pytest.mark.parametrize(

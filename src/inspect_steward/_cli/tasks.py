@@ -16,7 +16,7 @@ from .._evalset.read import ReadEvalSetError, read_eval_set
     "definition_args",
     multiple=True,
     metavar="KEY=VALUE",
-    help="Argument for the definition (flow spec function args only). Can be specified multiple times.",
+    help="Argument for the definition: a flow spec function argument, or an eval_set() script's --KEY=VALUE option. Can be specified multiple times.",
 )
 @click.option(
     "--type",

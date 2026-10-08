@@ -1,3 +1,7 @@
+## Unreleased
+
+- Definition arguments (`steward launch -A KEY=VALUE`, and `steward tasks -A`) now reach a plain `eval_set()` script as well as a Flow spec. A script receives each as its own `--key=value` option (`-A shard=0/3` becomes `--shard=0/3`), read with ordinary `argparse`, at capture and in every worker; the arguments are recorded in the manifest and reused on re-launch, as Flow's are.
+
 ## 0.2.9 (07 September 2026)
 
 - **Default change: stuck samples are now handled by the agent.** The agent may cancel a stuck tool call without asking (`stuck_cancel`, now default `true`) and, if the sample is still stuck, cancel and requeue it for one fresh attempt (`stuck_action`, new, default `retry`). A sample that wedges again after its retry goes to the operator. Set `stuck_action` to `score`, `error`, or `cancel` for a different standing outcome, or opt out with `stuck_cancel: false` and `stuck_action: none` (or the `STEWARD_*` variables). Requeuing beyond the single guarded retry remains operator-only, and Steward itself still never cancels anything: the grants decide the item's owner and pre-fill the command, and the agent executes and journals.
